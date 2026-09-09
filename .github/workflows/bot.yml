@@ -1,24 +1,53 @@
-name:bot on:workflow_dispatch:schedule:# Запуск каждые 2 часа с 9:00 до 23:00 (по времени UTC)# Если нужно время по МСК (UTC+3), замените '9-23/2' на '6-20/2'- cron: '0 9-23/2 * * *'jobs:build:runs-on: ubuntu-latestpermissions:contents: writesteps:
-  - name: Checkout Repo
-    uses: actions/checkout@v4
-
-  - name: Setup Python
-    uses: actions/setup-python@v5
-    with:
-      python-version: '3.11'
-
-  - name: Install Reqs
-    run: pip install -r requirements.txt
-
-  - name: Run Script
-    env:
-      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-      CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-      AI_API_KEY: ${{ secrets.AI_API_KEY }}
-    run: python main.py
-
-  - name: Save History
-    uses: stefanzweifel/git-auto-commit-action@v5
-    with:
-      commit_message: 'update history'
-      file_pattern: 'history.json'
+{
+  "name": "bot",
+  "on": {
+    "workflow_dispatch": null,
+    "schedule": [
+      {
+        "cron": "0 9-23/2 * * *"
+      }
+    ]
+  },
+  "jobs": {
+    "build": {
+      "runs-on": "ubuntu-latest",
+      "permissions": {
+        "contents": "write"
+      },
+      "steps": [
+        {
+          "name": "Checkout Repo",
+          "uses": "actions/checkout@v4"
+        },
+        {
+          "name": "Setup Python",
+          "uses": "actions/setup-python@v5",
+          "with": {
+            "python-version": "3.11"
+          }
+        },
+        {
+          "name": "Install Reqs",
+          "run": "pip install -r requirements.txt"
+        },
+        {
+          "name": "Run Script",
+          "env": {
+            "BOT_TOKEN": "${{ secrets.BOT_TOKEN }}",
+            "CHANNEL_ID": "${{ secrets.CHANNEL_ID }}",
+            "AI_API_KEY": "${{ secrets.AI_API_KEY }}"
+          },
+          "run": "python main.py"
+        },
+        {
+          "name": "Save History",
+          "uses": "stefanzweifel/git-auto-commit-action@v5",
+          "with": {
+            "commit_message": "update history",
+            "file_pattern": "history.json"
+          }
+        }
+      ]
+    }
+  }
+}
