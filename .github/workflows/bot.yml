@@ -1,31 +1,15 @@
-STREAMING_CHUNK: Настройка триггеров
-
 name: Telegram Auto Poster
 
 on:
-
-Запуск по расписанию (Cron).
-
-Приведенный пример запускает скрипт каждые 3 часа с 06:00 до 21:00 по UTC.
-
-Это обеспечит равномерный выход постов в течение дня, как требовалось в ТЗ.
-
 schedule:
 - cron: '0 6,9,12,15,18,21 * * *'
-
-Позволяет запускать Action вручную из интерфейса GitHub (кнопка Run workflow)
-
 workflow_dispatch:
-
-STREAMING_CHUNK: Настройка окружения и шагов
 
 jobs:
 run-bot:
 runs-on: ubuntu-latest
-
-# Права на запись необходимы для коммита файла history.json обратно в репозиторий
 permissions:
-  contents: write
+contents: write
 
 steps:
   - name: Checkout repository
@@ -39,18 +23,14 @@ steps:
   - name: Install dependencies
     run: pip install -r requirements.txt
     
-  # STREAMING_CHUNK: Запуск скрипта и сохранение прогресса
   - name: Run Python script
     env:
-      # Секреты берутся из настроек репозитория (Settings -> Secrets and variables -> Actions)
       BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
       CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
     run: python main.py
     
   - name: Commit history updates
-    # Используем git-auto-commit для сохранения файла history.json, 
-    # чтобы бот запомнил, какие новости уже были опубликованы.
     uses: stefanzweifel/git-auto-commit-action@v5
     with:
       commit_message: "chore: update posted news history"
