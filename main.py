@@ -4,7 +4,6 @@ import logging
 import feedparser
 import requests
 import google.generativeai as genai
-from datetime import datetime
 
 # Настройка логирования для отслеживания процесса в GitHub Actions
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -24,11 +23,7 @@ RSS_FEEDS = [
     "https://djmag.com/rss.xml"
 ]
 
-# Настройка Gemini API
-genai.configure(api_key=AI_API_KEY)
-
 def load_history() -> list:
-    """Загружает список уже опубликованных URL-адресов."""
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
@@ -39,7 +34,6 @@ def load_history() -> list:
     return []
 
 def save_history(history: list):
-    """Сохраняет обновленный список URL-адресов (последние 200)."""
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history[-200:], f, ensure_ascii=False, indent=2)
@@ -47,7 +41,6 @@ def save_history(history: list):
         logging.error(f"Ошибка сохранения истории: {e}")
 
 def fetch_fresh_news(history: list) -> dict | None:
-    """Обходит RSS-ленты и возвращает первую свежую новость."""
     logging.info("Начинаю сбор новостей из RSS...")
     for feed_url in RSS_FEEDS:
         try:
@@ -68,7 +61,6 @@ def fetch_fresh_news(history: list) -> dict | None:
     return None
 
 def generate_telegram_post(news_data: dict) -> str | None:
-    """Отправляет новость в Gemini и получает готовый текст."""
     logging.info("Отправляю задачу в Gemini...")
     
     prompt = (
@@ -87,16 +79,30 @@ def generate_telegram_post(news_data: dict) -> str | None:
     )
     
     try:
-        # Умный перебор моделей: пробуем самые актуальные версии
-        try:
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            response = model.generate_content(prompt)
-        except Exception as e_flash:
-            logging.warning(f"Модель flash недоступна, пробуем gemini-pro... Ошибка: {e_flash}")
-            model = genai.GenerativeModel('gemini-pro')
-            response = model.generate_content(prompt)
-
-        # Очищаем текст от возможных markdown-артефактов
+        # Получаем список всех доступных моделей для этого API ключа
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        
+        logging.info(f"Доступные модели: {available_models}")
+        
+        if not available_models:
+            logging.error("Нет доступных моделей для генерации текста по этому ключу!")
+            return None
+            
+        # Умный выбор лучшей модели (ищем современные версии)
+        target_model = available_models[0]
+        for m in available_models:
+            if 'gemini-1.5' in m or 'gemini-2' in m or 'flash' in m:
+                target_model = m
+                break
+                
+        logging.info(f"Используем модель: {target_model}")
+        
+        model = genai.GenerativeModel(target_model)
+        response = model.generate_content(prompt)
+        
         post_text = response.text.replace("```html", "").replace("```", "").strip()
         return post_text
     except Exception as e:
@@ -104,7 +110,6 @@ def generate_telegram_post(news_data: dict) -> str | None:
         return None
 
 def send_to_telegram(text: str, link: str):
-    """Отправляет отформатированное сообщение в Telegram."""
     logging.info("Публикация поста в Telegram...")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     
@@ -133,6 +138,9 @@ def main():
     if not all([BOT_TOKEN, CHANNEL_ID, AI_API_KEY]):
         logging.error("КРИТИЧЕСКАЯ ОШИБКА: Не заданы переменные окружения!")
         return
+
+    # Инициализация API здесь
+    genai.configure(api_key=AI_API_KEY)
 
     history = load_history()
     news_item = fetch_fresh_news(history)
