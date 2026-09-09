@@ -2,7 +2,7 @@
 name: bot
 
 on:
-  workflow_dispatch:   # ручной запуск через GitHub UI
+  workflow_dispatch:   # ручной запуск
   schedule:
     - cron: "0 */3 * * *"  # каждые 3 часа
 
@@ -23,13 +23,12 @@ jobs:
 
       - run: python main.py
 
-      # Секреты (GitHub автоматически подставит значения)
+      # Секреты
     env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
         AI_API_KEY: ${{ secrets.AI_API_KEY }}
-
-    -uses: stefanzweifel/git-auto-commit-action@v5
-    with:
+     -uses: stefanzweifel/git-auto-commit-action@v5
+     with:
           commit_message: "update history"
           file_pattern: "history.json"
