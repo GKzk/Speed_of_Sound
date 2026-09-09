@@ -1,37 +1,30 @@
 name: Telegram Auto Poster
-
 on:
 schedule:
-- cron: '0 6,9,12,15,18,21 * * *'
-workflow_dispatch:
-
+- cron: "0 6,9,12,15,18,21 * * *"
+workflow_dispatch: {}
 jobs:
 run-bot:
 runs-on: ubuntu-latest
 permissions:
 contents: write
-
 steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
-    
-  - name: Set up Python 3.11
-    uses: actions/setup-python@v4
-    with:
-      python-version: '3.11'
-      
-  - name: Install dependencies
-    run: pip install -r requirements.txt
-    
-  - name: Run Python script
-    env:
-      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-      CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-      AI_API_KEY: ${{ secrets.AI_API_KEY }}
-    run: python main.py
-    
-  - name: Commit history updates
-    uses: stefanzweifel/git-auto-commit-action@v5
-    with:
-      commit_message: "chore: update posted news history"
-      file_pattern: "history.json"
+- name: Checkout repository
+uses: actions/checkout@v4
+- name: Set up Python 3.11
+uses: actions/setup-python@v4
+with:
+python-version: "3.11"
+- name: Install dependencies
+run: pip install -r requirements.txt
+- name: Run Python script
+env:
+BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+AI_API_KEY: ${{ secrets.AI_API_KEY }}
+run: python main.py
+- name: Commit history updates
+uses: stefanzweifel/git-auto-commit-action@v5
+with:
+commit_message: "chore: update posted news history"
+file_pattern: "history.json"
