@@ -1,15 +1,4 @@
-STREAMING_CHUNK:Configuring workflow triggers and schedulename: boton:
-workflow_dispatch:
-schedule:
-# Запуск каждые 2 часа в период с 9:00 до 23:00 (по времени UTC)
-# Если нужно время по МСК (UTC+3), замените '9-23/2' на '6-20/2'
-- cron: '0 9-23/2 * * *'
-STREAMING_CHUNK:Setting up build jobs and permissionsjobs:
-build:
-runs-on: ubuntu-latest
-permissions:
-contents:writesteps:
-  # STREAMING_CHUNK:Checking out code and setting up Python
+name: boton:workflow_dispatch:schedule:# Запуск каждые 2 часа с 9:00 до 23:00 (по времени UTC)# Если нужно время по МСК (UTC+3), замените '9-23/2' на '6-20/2'- cron: '0 9-23/2 * * *'jobs:build:runs-on: ubuntu-latestpermissions:contents: writesteps:
   - name: Checkout Repo
     uses: actions/checkout@v4
 
@@ -18,7 +7,6 @@ contents:writesteps:
     with:
       python-version: '3.11'
 
-  # STREAMING_CHUNK:Installing dependencies and running script
   - name: Install Reqs
     run: pip install -r requirements.txt
 
@@ -29,7 +17,6 @@ contents:writesteps:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
     run: python main.py
 
-  # STREAMING_CHUNK:Committing and saving history
   - name: Save History
     uses: stefanzweifel/git-auto-commit-action@v5
     with:
