@@ -1,23 +1,14 @@
-STREAMING_CHUNK:Configuring workflow triggers and schedule
-
-name: bot
-
-on:
+STREAMING_CHUNK:Configuring workflow triggers and schedulename:boton:
 workflow_dispatch:
 schedule:
 # Запуск каждые 2 часа в период с 9:00 до 23:00 (по времени UTC)
 # Если нужно время по МСК (UTC+3), замените '9-23/2' на '6-20/2'
 - cron: '0 9-23/2 * * *'
-
-STREAMING_CHUNK:Setting up build jobs and permissions
-
-jobs:
+STREAMING_CHUNK:Setting up build jobs and permissionsjobs:
 build:
 runs-on: ubuntu-latest
 permissions:
-contents: write
-
-steps:
+contents: writesteps:
   # STREAMING_CHUNK:Checking out code and setting up Python
   - name: Checkout Repo
     uses: actions/checkout@v4
