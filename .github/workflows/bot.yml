@@ -5,8 +5,7 @@ on:
   workflow_dispatch:   # ручной запуск
   schedule:
     - cron: "0 */3 * * *"  # каждые 3 часа
-
-jobs:
+  jobs:
     build:
     runs-on: ubuntu-latest
     permissions:
