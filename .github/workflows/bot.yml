@@ -13,19 +13,19 @@ contents: write
 steps:
 - uses: actions/checkout@v4
 
-- uses: actions/setup-python@v4
-with:
+  - uses: actions/setup-python@v4
+    with:
       python-version: "3.11"
       
-run: pip install -r requirements.txt
+  - run: pip install -r requirements.txt
     
-run: python main.py
-env:
+  - run: python main.py
+    env:
       BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
       CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       
-uses: stefanzweifel/git-auto-commit-action@v5
-with:
+  - uses: stefanzweifel/git-auto-commit-action@v5
+    with:
       commit_message: "update history"
       file_pattern: "history.json"
