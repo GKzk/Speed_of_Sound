@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 import feedparser
 import requests
 import google.generativeai as genai
@@ -40,6 +41,20 @@ def save_history(history: list):
     except Exception as e:
         logging.error(f"Ошибка сохранения истории: {e}")
 
+def clean_html_for_telegram(text: str) -> str:
+    """Очищает HTML-текст от тегов, которые не поддерживаются Telegram API."""
+    # Заменяем абзацы и переносы на обычные переводы строк
+    text = re.sub(r'<p[^>]*>', '', text)
+    text = re.sub(r'</p>', '\n\n', text)
+    text = re.sub(r'<br\s*/?>', '\n', text)
+    text = re.sub(r'<div[^>]*>', '', text)
+    text = re.sub(r'</div>', '\n', text)
+    text = re.sub(r'</?h[1-6]>', '', text)
+    
+    # Удаляем лишние переносы строк
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
 def fetch_fresh_news(history: list) -> dict | None:
     logging.info("Начинаю сбор новостей из RSS...")
     for feed_url in RSS_FEEDS:
@@ -53,7 +68,7 @@ def fetch_fresh_news(history: list) -> dict | None:
                 if link in history:
                     continue
                 
-                # Пытаемся вытащить картинку (обложку релиза или фото статьи) из RSS
+                # Попытка извлечь обложку/картинку из RSS
                 image_url = ""
                 if "media_content" in entry and len(entry.media_content) > 0:
                     image_url = entry.media_content[0].get("url", "")
@@ -74,22 +89,24 @@ def generate_telegram_post(news_data: dict) -> str | None:
     logging.info("Отправляю задачу в Gemini...")
     
     prompt = (
-        "Ты — инсайдер рейв-индустрии, музыкальный продюсер и автор крутого Telegram-канала об электронной музыке. "
-        "Твоя аудитория — рейверы, диджеи и саунд-продюсеры. Твоя задача — написать живой, цепляющий и сочный пост из предложенной новости.\n\n"
+        "Ты — инсайдер рейв-индустрии, музыкальный продюсер и автор Telegram-канала об электронной музыке. "
+        "Твоя аудитория — рейверы, диджеи и саунд-продюсеры. Напиши живой, цепляющий и сочный пост по новости.\n\n"
         "СТИЛЬ И ПОДАЧА:\n"
-        "- Энергично, легко для чтения (используй абзацы), с журналистским фактажом, но без занудства и без спам-кликбейта.\n"
-        "- Текст должен дышать культурой танцпола. Если исходная новость скучная — сделай ее интересной!\n"
-        "- Обязательно упоминай конкретные жанры (Techno, House, Drum & Bass, Trance, IDM и т.д.), если они подходят по смыслу.\n"
-        "- Если новость о новом плагине, VST, синтезаторе или релизе трека — сделай акцент на том, чтобы читатели перешли по ссылке в кнопке внизу поста (например: 'Качайте плагин по ссылке ниже', 'Забирайте релиз').\n\n"
+        "- Энергично, легко для чтения, с интересными фактами, но без занудства и спам-кликбейта.\n"
+        "- Упоминай конкретные жанры (Techno, House, Drum & Bass, Trance, Dubstep, IDM и т.д.), если они подходят по смыслу.\n"
+        "- Текст должен быть разбит на короткие читаемые абзацы.\n\n"
+        "ВАЖНОЕ ПРАВИЛО ПО HTML:\n"
+        "- Используй ТОЛЬКО разрешенные теги Telegram: <b>...</b> для жирного и <i>...</i> для курсива.\n"
+        "- СТРОГО ЗАПРЕЩЕНО использовать теги <p>, <div>, <br>, <h1>, <h2> и т.д.! Разделяй абзацы простым переносом строки.\n\n"
         "СТРУКТУРА:\n"
-        "1. Заголовок: Сочный, привлекающий внимание (в HTML тегах <b>...</b>).\n"
-        "2. Интро: Одно предложение, чтобы зацепить.\n"
-        "3. Суть: Абзац с 'мясом' новости. Максимум полезной инфы простым языком.\n"
-        "4. Эмодзи: Используй стильные эмодзи (🔥, 🎛, 👽, 🔊), но не больше 3-4 на весь пост.\n"
-        "5. Хэштеги: 3-4 штуки в самом конце.\n\n"
-        "ОБЪЕМ: 500-800 символов. Текст должен быть компактным.\n"
-        "ВЕРНИ ТОЛЬКО ГОТОВЫЙ ТЕКСТ В HTML. БЕЗ markdown-тегов ```html.\n\n"
-        f"Заголовок: {news_data['title']}\n"
+        "1. Заголовок: Сочный и привлекающий внимание (в тегах <b>...</b>).\n"
+        "2. Интро: Одно предложение для зацепа.\n"
+        "3. Суть новости: 1-2 коротких абзаца с полезной информацией.\n"
+        "4. Эмодзи: 2-4 стильных эмодзи (🔥, 🎛, 👽, 🔊) на весь пост.\n"
+        "5. Хэштеги: 3-4 тематических хэштега в самом конце.\n\n"
+        "ОБЪЕМ: 400-700 символов.\n"
+        "ВЕРНИ ТОЛЬКО ГОТОВЫЙ ТЕКСТ. БЕЗ markdown-тегов ```html.\n\n"
+        f"Заголовок новости: {news_data['title']}\n"
         f"Описание: {news_data['summary']}\n"
     )
     
@@ -102,7 +119,7 @@ def generate_telegram_post(news_data: dict) -> str | None:
         logging.info(f"Доступные модели: {available_models}")
         
         if not available_models:
-            logging.error("Нет доступных моделей для генерации текста по этому ключу!")
+            logging.error("Нет доступных моделей по этому ключу!")
             return None
             
         preferred_models = [
@@ -123,6 +140,7 @@ def generate_telegram_post(news_data: dict) -> str | None:
         response = model.generate_content(prompt)
         
         post_text = response.text.replace("```html", "").replace("```", "").strip()
+        post_text = clean_html_for_telegram(post_text)
         return post_text
     except Exception as e:
         logging.error(f"Критическая ошибка при генерации текста Gemini: {e}")
@@ -131,17 +149,15 @@ def generate_telegram_post(news_data: dict) -> str | None:
 def send_to_telegram(text: str, link: str, image_url: str = ""):
     logging.info("Публикация поста в Telegram...")
     
-    # Кнопка со ссылкой на источник / плагин
     keyboard = {
         "inline_keyboard": [[{"text": "⚡️ Читать / Качать / Смотреть", "url": link}]]
     }
     
-    # Telegram API лимитирует подпись к фото до 1024 символов
+    # Ограничение длины подписи к фото в Telegram (1024 символа)
     if image_url and len(text) > 1000:
         text = text[:990] + "..."
         
     try:
-        # Если есть картинка - отправляем фото, если нет - обычное сообщение
         if image_url:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
             payload = {
