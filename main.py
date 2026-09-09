@@ -53,8 +53,18 @@ def fetch_fresh_news(history: list) -> dict | None:
                 if link in history:
                     continue
                 
-                logging.info(f"Найдена свежая новость: {title}")
-                return {"title": title, "link": link, "summary": summary}
+                # Пытаемся вытащить картинку (обложку релиза или фото статьи) из RSS
+                image_url = ""
+                if "media_content" in entry and len(entry.media_content) > 0:
+                    image_url = entry.media_content[0].get("url", "")
+                elif "enclosures" in entry and len(entry.enclosures) > 0:
+                    for enc in entry.enclosures:
+                        if "image" in enc.get("type", ""):
+                            image_url = enc.get("href", "")
+                            break
+                
+                logging.info(f"Найдена свежая новость: {title}. Картинка: {'Да' if image_url else 'Нет'}")
+                return {"title": title, "link": link, "summary": summary, "image_url": image_url}
         except Exception as e:
             logging.error(f"Ошибка парсинга ленты {feed_url}: {e}")
     logging.info("Новых статей не найдено.")
@@ -64,27 +74,26 @@ def generate_telegram_post(news_data: dict) -> str | None:
     logging.info("Отправляю задачу в Gemini...")
     
     prompt = (
-        "Ты — профессиональный музыкальный журналист и редактор авторитетного Telegram-канала об электронной музыке и саунд-продакшене. "
-        "Твоя задача — перевести предоставленную новость на русский язык и написать качественный новостной пост. \n"
-        "Стиль канала: экспертный, информативный, уважительный к читателю. Журналистский подход: факты на первом месте. Никакого кликбейта, спама, агрессивных призывов или 'воды'.\n\n"
-        "ТЕМАТИКА (на чем делать акцент в зависимости от новости):\n"
-        "- Новые электронные релизы и альбомы.\n"
-        "- Интервью с продюсерами и их инсайты.\n"
-        "- Новые плагины, синтезаторы и студийное железо.\n"
-        "- Анонсы фестивалей и важных мероприятий электронной сцены.\n\n"
-        "ТРЕБОВАНИЯ К ПОСТУ:\n"
-        "1. Длина текста: 400-800 символов (достаточно для раскрытия сути).\n"
-        "2. Заголовок: емкий, новостной, жирный текст (в HTML тегах <b>...</b>).\n"
-        "3. Эмодзи: используй минимально и только по делу (не более 2-3 на весь пост), чтобы не выглядело как спам.\n"
-        "4. Структура: Лид (главная мысль новости) -> Детали/Суть (почему это важно для индустрии) -> Лаконичное заключение без лишних эмоций.\n"
-        "5. Хэштеги: 3-5 релевантных хэштегов в самом конце.\n\n"
-        "Верни ТОЛЬКО готовый текст поста в HTML-формате, без лишних комментариев, без markdown-разметки (без ```html).\n\n"
+        "Ты — инсайдер рейв-индустрии, музыкальный продюсер и автор крутого Telegram-канала об электронной музыке. "
+        "Твоя аудитория — рейверы, диджеи и саунд-продюсеры. Твоя задача — написать живой, цепляющий и сочный пост из предложенной новости.\n\n"
+        "СТИЛЬ И ПОДАЧА:\n"
+        "- Энергично, легко для чтения (используй абзацы), с журналистским фактажом, но без занудства и без спам-кликбейта.\n"
+        "- Текст должен дышать культурой танцпола. Если исходная новость скучная — сделай ее интересной!\n"
+        "- Обязательно упоминай конкретные жанры (Techno, House, Drum & Bass, Trance, IDM и т.д.), если они подходят по смыслу.\n"
+        "- Если новость о новом плагине, VST, синтезаторе или релизе трека — сделай акцент на том, чтобы читатели перешли по ссылке в кнопке внизу поста (например: 'Качайте плагин по ссылке ниже', 'Забирайте релиз').\n\n"
+        "СТРУКТУРА:\n"
+        "1. Заголовок: Сочный, привлекающий внимание (в HTML тегах <b>...</b>).\n"
+        "2. Интро: Одно предложение, чтобы зацепить.\n"
+        "3. Суть: Абзац с 'мясом' новости. Максимум полезной инфы простым языком.\n"
+        "4. Эмодзи: Используй стильные эмодзи (🔥, 🎛, 👽, 🔊), но не больше 3-4 на весь пост.\n"
+        "5. Хэштеги: 3-4 штуки в самом конце.\n\n"
+        "ОБЪЕМ: 500-800 символов. Текст должен быть компактным.\n"
+        "ВЕРНИ ТОЛЬКО ГОТОВЫЙ ТЕКСТ В HTML. БЕЗ markdown-тегов ```html.\n\n"
         f"Заголовок: {news_data['title']}\n"
         f"Описание: {news_data['summary']}\n"
     )
     
     try:
-        # Получаем список всех доступных моделей
         available_models = []
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
@@ -96,17 +105,13 @@ def generate_telegram_post(news_data: dict) -> str | None:
             logging.error("Нет доступных моделей для генерации текста по этому ключу!")
             return None
             
-        # Задаем приоритет самых современных моделей
         preferred_models = [
             'models/gemini-3.8-flash',
             'models/gemini-3.7-flash',
-            'models/gemini-3.6-flash',
-            'models/gemini-3.5-flash'
+            'models/gemini-3.6-flash'
         ]
         
-        target_model = available_models[0] # Резервный вариант
-        
-        # Ищем совпадения с нашим приоритетным списком
+        target_model = available_models[0]
         for pref in preferred_models:
             if pref in available_models:
                 target_model = pref
@@ -123,22 +128,39 @@ def generate_telegram_post(news_data: dict) -> str | None:
         logging.error(f"Критическая ошибка при генерации текста Gemini: {e}")
         return None
 
-def send_to_telegram(text: str, link: str):
+def send_to_telegram(text: str, link: str, image_url: str = ""):
     logging.info("Публикация поста в Telegram...")
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     
+    # Кнопка со ссылкой на источник / плагин
     keyboard = {
-        "inline_keyboard": [[{"text": "Читать оригинал 🔗", "url": link}]]
-    }
-    payload = {
-        "chat_id": CHANNEL_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-        "reply_markup": json.dumps(keyboard)
+        "inline_keyboard": [[{"text": "⚡️ Читать / Качать / Смотреть", "url": link}]]
     }
     
+    # Telegram API лимитирует подпись к фото до 1024 символов
+    if image_url and len(text) > 1000:
+        text = text[:990] + "..."
+        
     try:
+        # Если есть картинка - отправляем фото, если нет - обычное сообщение
+        if image_url:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+            payload = {
+                "chat_id": CHANNEL_ID,
+                "photo": image_url,
+                "caption": text,
+                "parse_mode": "HTML",
+                "reply_markup": json.dumps(keyboard)
+            }
+        else:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": CHANNEL_ID,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+                "reply_markup": json.dumps(keyboard)
+            }
+            
         response = requests.post(url, data=payload)
         response.raise_for_status()
         logging.info("✅ Пост успешно опубликован!")
@@ -153,7 +175,6 @@ def main():
         logging.error("КРИТИЧЕСКАЯ ОШИБКА: Не заданы переменные окружения!")
         return
 
-    # Инициализация API
     genai.configure(api_key=AI_API_KEY)
 
     history = load_history()
@@ -166,7 +187,7 @@ def main():
     post_text = generate_telegram_post(news_item)
     
     if post_text:
-        send_to_telegram(post_text, news_item['link'])
+        send_to_telegram(post_text, news_item['link'], news_item.get('image_url', ''))
         history.append(news_item['link'])
         save_history(history)
         logging.info("Цикл автоматизации успешно завершен.")
