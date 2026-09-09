@@ -79,7 +79,7 @@ def generate_telegram_post(news_data: dict) -> str | None:
     )
     
     try:
-        # Получаем список всех доступных моделей для этого API ключа
+        # Получаем список всех доступных моделей
         available_models = []
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
@@ -91,11 +91,20 @@ def generate_telegram_post(news_data: dict) -> str | None:
             logging.error("Нет доступных моделей для генерации текста по этому ключу!")
             return None
             
-        # Умный выбор лучшей модели (ищем современные версии)
-        target_model = available_models[0]
-        for m in available_models:
-            if 'gemini-1.5' in m or 'gemini-2' in m or 'flash' in m:
-                target_model = m
+        # Задаем приоритет самых современных моделей, как просит API
+        preferred_models = [
+            'models/gemini-3.8-flash',
+            'models/gemini-3.7-flash',
+            'models/gemini-3.6-flash',
+            'models/gemini-3.5-flash'
+        ]
+        
+        target_model = available_models[0] # Резервный вариант
+        
+        # Ищем совпадения с нашим приоритетным списком
+        for pref in preferred_models:
+            if pref in available_models:
+                target_model = pref
                 break
                 
         logging.info(f"Используем модель: {target_model}")
@@ -139,7 +148,7 @@ def main():
         logging.error("КРИТИЧЕСКАЯ ОШИБКА: Не заданы переменные окружения!")
         return
 
-    # Инициализация API здесь
+    # Инициализация API
     genai.configure(api_key=AI_API_KEY)
 
     history = load_history()
