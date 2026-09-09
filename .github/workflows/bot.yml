@@ -1,4 +1,4 @@
-name:boton:workflow_dispatch:schedule:# Запуск каждые 2 часа с 9:00 до 23:00 (по времени UTC)# Если нужно время по МСК (UTC+3), замените '9-23/2' на '6-20/2'- cron: '0 9-23/2 * * *'jobs:build:runs-on: ubuntu-latestpermissions:contents: writesteps:
+name:bot on:workflow_dispatch:schedule:# Запуск каждые 2 часа с 9:00 до 23:00 (по времени UTC)# Если нужно время по МСК (UTC+3), замените '9-23/2' на '6-20/2'- cron: '0 9-23/2 * * *'jobs:build:runs-on: ubuntu-latestpermissions:contents: writesteps:
   - name: Checkout Repo
     uses: actions/checkout@v4
 
