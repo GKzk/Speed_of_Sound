@@ -9,7 +9,7 @@ from datetime import datetime
 # Настройка логирования для отслеживания процесса в GitHub Actions
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Получаем ключи из секретов GitHub (или переменных окружения)
+# Получаем ключи из секретов GitHub
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")
 AI_API_KEY = os.getenv("AI_API_KEY", "")
@@ -26,8 +26,6 @@ RSS_FEEDS = [
 
 # Настройка Gemini API
 genai.configure(api_key=AI_API_KEY)
-# Используем быструю и современную модель Gemini
-model = genai.GenerativeModel('gemini-1.5-flash')
 
 def load_history() -> list:
     """Загружает список уже опубликованных URL-адресов."""
@@ -89,12 +87,20 @@ def generate_telegram_post(news_data: dict) -> str | None:
     )
     
     try:
-        response = model.generate_content(prompt)
+        # Умный перебор моделей: пробуем самые актуальные версии
+        try:
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content(prompt)
+        except Exception as e_flash:
+            logging.warning(f"Модель flash недоступна, пробуем gemini-pro... Ошибка: {e_flash}")
+            model = genai.GenerativeModel('gemini-pro')
+            response = model.generate_content(prompt)
+
         # Очищаем текст от возможных markdown-артефактов
         post_text = response.text.replace("```html", "").replace("```", "").strip()
         return post_text
     except Exception as e:
-        logging.error(f"Ошибка при генерации текста Gemini: {e}")
+        logging.error(f"Критическая ошибка при генерации текста Gemini: {e}")
         return None
 
 def send_to_telegram(text: str, link: str):
