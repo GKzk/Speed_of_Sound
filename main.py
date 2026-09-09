@@ -3,7 +3,7 @@ import json
 import logging
 import feedparser
 import requests
-from openai import OpenAI
+import google.generativeai as genai
 from datetime import datetime
 
 # Настройка логирования для отслеживания процесса в GitHub Actions
@@ -13,20 +13,21 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")
 AI_API_KEY = os.getenv("AI_API_KEY", "")
-AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.openai.com/v1")
 
-# Файл для сохранения истории опубликованных ссылок (чтобы избежать дублей)
+# Файл для сохранения истории опубликованных ссылок
 HISTORY_FILE = "history.json"
 
-# Список RSS-лент для сбора новостей электронной музыки
+# Список RSS-лент
 RSS_FEEDS = [
     "https://mixmag.net/feed",
     "https://edm.com/.rss/full",
     "https://djmag.com/rss.xml"
 ]
 
-# Инициализация клиента нейросети
-client = OpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
+# Настройка Gemini API
+genai.configure(api_key=AI_API_KEY)
+# Используем быструю и современную модель Gemini
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 def load_history() -> list:
     """Загружает список уже опубликованных URL-адресов."""
@@ -40,7 +41,7 @@ def load_history() -> list:
     return []
 
 def save_history(history: list):
-    """Сохраняет обновленный список URL-адресов, оставляя только последние 200 для экономии места."""
+    """Сохраняет обновленный список URL-адресов (последние 200)."""
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history[-200:], f, ensure_ascii=False, indent=2)
@@ -48,9 +49,8 @@ def save_history(history: list):
         logging.error(f"Ошибка сохранения истории: {e}")
 
 def fetch_fresh_news(history: list) -> dict | None:
-    """Обходит RSS-ленты и возвращает первую свежую новость, которой нет в истории."""
+    """Обходит RSS-ленты и возвращает первую свежую новость."""
     logging.info("Начинаю сбор новостей из RSS...")
-    
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
@@ -59,28 +59,21 @@ def fetch_fresh_news(history: list) -> dict | None:
                 title = entry.get("title", "")
                 summary = entry.get("summary", "")
                 
-                # Если новость уже публиковалась - пропускаем
                 if link in history:
                     continue
                 
-                # Если нашли новую статью, возвращаем её данные
                 logging.info(f"Найдена свежая новость: {title}")
-                return {
-                    "title": title,
-                    "link": link,
-                    "summary": summary
-                }
+                return {"title": title, "link": link, "summary": summary}
         except Exception as e:
             logging.error(f"Ошибка парсинга ленты {feed_url}: {e}")
-            
     logging.info("Новых статей не найдено.")
     return None
 
 def generate_telegram_post(news_data: dict) -> str | None:
-    """Отправляет сырую новость в AI и получает готовый текст для Telegram."""
-    logging.info("Отправляю задачу в нейросеть...")
+    """Отправляет новость в Gemini и получает готовый текст."""
+    logging.info("Отправляю задачу в Gemini...")
     
-    system_prompt = (
+    prompt = (
         "Ты — профессиональный SMM-редактор Telegram-канала о создании электронной музыки и диджеинге. "
         "Твоя задача — перевести предоставленную новость на русский язык и написать крутой пост. \n"
         "Стиль канала: яркий, с юмором, минимум воды, максимум эмоций. \n\n"
@@ -90,38 +83,28 @@ def generate_telegram_post(news_data: dict) -> str | None:
         "3. Эмодзи: 1-2 в начале и в конце поста, а также 1-2 по тексту.\n"
         "4. Структура: короткое вовлекающее интро -> ключевые факты -> авторская подпись.\n"
         "5. Хэштеги: 5-8 подходящих хэштегов в самом конце (например, #electronicmusic #dj #production).\n\n"
-        "Верни ТОЛЬКО готовый текст поста в HTML-формате, без лишних комментариев."
+        "Верни ТОЛЬКО готовый текст поста в HTML-формате, без лишних комментариев, без markdown-разметки (без ```html).\n\n"
+        f"Заголовок: {news_data['title']}\n"
+        f"Описание: {news_data['summary']}\n"
     )
     
-    user_prompt = f"Заголовок: {news_data['title']}\nОписание: {news_data['summary']}\nСсылка: {news_data['link']}"
-    
     try:
-        response = client.chat.completions.create(
-            model="gpt-4-turbo", # Можно использовать gpt-3.5-turbo или аналогичные модели
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7
-        )
-        post_text = response.choices[0].message.content.strip()
+        response = model.generate_content(prompt)
+        # Очищаем текст от возможных markdown-артефактов
+        post_text = response.text.replace("```html", "").replace("```", "").strip()
         return post_text
     except Exception as e:
-        logging.error(f"Ошибка при генерации текста AI: {e}")
+        logging.error(f"Ошибка при генерации текста Gemini: {e}")
         return None
 
 def send_to_telegram(text: str, link: str):
-    """Отправляет отформатированное сообщение в Telegram с inline-кнопкой."""
+    """Отправляет отформатированное сообщение в Telegram."""
     logging.info("Публикация поста в Telegram...")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     
-    # Формируем кнопку-ссылку на оригинал статьи
     keyboard = {
-        "inline_keyboard": [
-            [{"text": "Читать оригинал 🔗", "url": link}]
-        ]
+        "inline_keyboard": [[{"text": "Читать оригинал 🔗", "url": link}]]
     }
-    
     payload = {
         "chat_id": CHANNEL_ID,
         "text": text,
@@ -141,8 +124,6 @@ def send_to_telegram(text: str, link: str):
         raise e
 
 def main():
-    """Точка входа, вызываемая GitHub Actions."""
-    # Проверка наличия всех ключей
     if not all([BOT_TOKEN, CHANNEL_ID, AI_API_KEY]):
         logging.error("КРИТИЧЕСКАЯ ОШИБКА: Не заданы переменные окружения!")
         return
@@ -158,8 +139,6 @@ def main():
     
     if post_text:
         send_to_telegram(post_text, news_item['link'])
-        
-        # Обновляем историю и сохраняем, чтобы GitHub Actions закоммитил изменения
         history.append(news_item['link'])
         save_history(history)
         logging.info("Цикл автоматизации успешно завершен.")
