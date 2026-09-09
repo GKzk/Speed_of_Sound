@@ -1,6 +1,17 @@
-name: boton:workflow_dispatch:schedule:
+name: bot
+
+on:
+workflow_dispatch:
+schedule:
 - cron: '0 */3 * * *'
-jobs:build:runs-on: ubuntu-latestpermissions:contents: writesteps:
+
+jobs:
+build:
+runs-on: ubuntu-latest
+permissions:
+contents: write
+
+steps:
   - name: Checkout Repo
     uses: actions/checkout@v4
 
