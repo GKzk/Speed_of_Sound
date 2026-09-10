@@ -1,3 +1,4 @@
+google-generativeai
 feedparser
 requests
-google-generativeai
+beautifulsoup4
