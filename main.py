@@ -1,254 +1,214 @@
 import os
+import re
 import json
 import logging
-import re
-import feedparser
 import requests
+import feedparser
+from bs4 import BeautifulSoup
 import google.generativeai as genai
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Переменные окружения
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHANNEL_ID = os.environ.get("CHANNEL_ID")
+AI_API_KEY = os.environ.get("AI_API_KEY")
 
 HISTORY_FILE = "history.json"
 
-# Расширенный список RSS-лент (рейвы, электронная музыка, железо, VST, битмейкинг и RU-сегмент)
+# Список проверенных источников RSS (Продвинутый продакшен, плагины, железо, мировой и ру-сегмент)
 RSS_FEEDS = [
-    # Мировые новости электронной сцены и рейв-культуры
-    "https://mixmag.net/feed",
-    "https://edm.com/.rss/full",
-    "https://djmag.com/rss.xml",
-    "https://www.attackmagazine.com/feed/",
-    
-    # Железо, синтезаторы, плагины и софт (Global)
-    "https://www.synthtopia.com/feed/",
-    "https://synthanatomy.com/feed",
-    "https://www.gearnews.com/feed/",
-    
-    # Русскоязычный сегмент (Музыкальный продакшен, VST, софт, студия, битмейкинг)
-    "https://samesound.ru/feed"
+    "https://samesound.ru/feed",              # Главный ру-портал про продакшен, плагины, DAW и железо
+    "https://www.attackmagazine.com/feed/",   # Подробно про продакшен, синтез, битмейкинг и андеграунд
+    "https://www.gearnews.com/feed/",         # Оперативные новости про железо, VST, скидки и софт
+    "https://www.synthtopia.com/feed/",       # Синтезаторы, новинки софта и железные модули
+    "https://www.synthanatomy.com/feed",      # Бесплатные плагины, скидки, железный саунд-дизайн
+    "https://mixmag.net/rss.xml",             # Главные мировые релизы и тренды
+    "https://edm.com/.rss/full/",             # Релизы, индустрия, крупные инфоповоды
+    "https://djmag.com/rss.xml"               # Интервью, железо, топовые релизы
 ]
 
-def load_history() -> list:
-    """Загружает историю уже опубликованных ссылок."""
+def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            logging.error(f"Ошибка загрузки истории: {e}")
-            return []
+            logging.error(f"Ошибка чтения истории: {e}")
     return []
 
-def save_history(history: list):
-    """Сохраняет обновленную историю ссылок."""
+def save_history(history):
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
+            json.dump(history[-100:], f, ensure_ascii=False, indent=2)
     except Exception as e:
         logging.error(f"Ошибка сохранения истории: {e}")
 
-def clean_html_for_telegram(text: str) -> str:
-    """Очищает текст от тегов, не поддерживаемых Telegram HTML API."""
-    if not text:
-        return ""
-    # Заменяем теги абзацев и переносов на новые строки
-    text = re.sub(r'</?(p|div|br|h[1-6])\s*/?>', '\n', text, flags=re.IGNORECASE)
-    # Оставляем только базовые теги Telegram
-    allowed_tags = r'</?(?:b|i|a|code)(?:\s+[^>]*)?>'
-    
-    def tag_cleaner(match):
-        tag = match.group(0)
-        if re.match(allowed_tags, tag, re.IGNORECASE):
-            return tag
-        return ''
+def extract_image_url(entry):
+    """Поиск обложки/картинки в RSS элементе"""
+    if 'media_content' in entry and len(entry.media_content) > 0:
+        return entry.media_content[0].get('url')
+    if 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
+        return entry.media_thumbnail[0].get('url')
         
-    cleaned = re.sub(r'</?[^>]+>', tag_cleaner, text)
-    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-    return cleaned.strip()
+    if 'enclosures' in entry:
+        for enc in entry.enclosures:
+            if enc.get('type', '').startswith('image/'):
+                return enc.get('href')
 
-def fetch_fresh_news() -> dict | None:
-    """Проходит по RSS-лентам и ищет самую свежую неопубликованную новость."""
+    html_content = ""
+    if 'content' in entry:
+        html_content = entry.content[0].value
+    elif 'description' in entry:
+        html_content = entry.description
+
+    if html_content:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        img = soup.find('img')
+        if img and img.get('src'):
+            src = img['src']
+            if src.startswith('http'):
+                return src
+
+    return None
+
+def fetch_fresh_news():
     history = load_history()
     logging.info("Начинаю сбор новостей из RSS...")
-
+    
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            if not feed.entries:
-                continue
-
             for entry in feed.entries:
-                link = entry.get("link")
-                if not link or link in history:
+                link = entry.link
+                if link in history:
                     continue
-
-                title = entry.get("title", "")
-                summary = entry.get("summary", entry.get("description", ""))
-
-                # Поиск изображения в RSS
-                image_url = None
-                if "media_content" in entry and len(entry.media_content) > 0:
-                    image_url = entry.media_content[0].get("url")
-                elif "media_thumbnail" in entry and len(entry.media_thumbnail) > 0:
-                    image_url = entry.media_thumbnail[0].get("url")
-                elif "enclosures" in entry:
-                    for enc in entry.enclosures:
-                        if enc.get("type", "").startswith("image/"):
-                            image_url = enc.get("href")
-                            break
-
-                if not image_url and summary:
-                    img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', summary)
-                    if img_match:
-                        image_url = img_match.group(1)
-
-                logging.info(f"Найдена свежая новость: {title}. Картинка: {'Да' if image_url else 'Нет'}")
-
+                
+                title = entry.title
+                summary = getattr(entry, 'summary', '') or getattr(entry, 'description', '')
+                clean_summary = BeautifulSoup(summary, "html.parser").get_text()[:700]
+                image_url = extract_image_url(entry)
+                
+                logging.info(f"Найдена новость: {title}. Картинка: {'Да' if image_url else 'Нет'}")
                 return {
                     "title": title,
-                    "summary": summary,
+                    "summary": clean_summary,
                     "link": link,
                     "image_url": image_url
                 }
         except Exception as e:
-            logging.error(f"Ошибка парсинга ленты {feed_url}: {e}")
-            continue
-
-    logging.info("Новых новостей не найдено.")
+            logging.error(f"Ошибка при парсинге {feed_url}: {e}")
+            
     return None
 
-def get_working_model() -> str:
-    """Динамически находит наилучшую доступную модель Gemini."""
+def clean_html_for_telegram(text):
+    """Очистка HTML для Telegram API"""
+    text = re.sub(r'</?(p|div|section|article|header|footer)[^>]*>', '\n', text)
+    text = re.sub(r'<br\s*/?>', '\n', text)
+    text = re.sub(r'</?(h1|h2|h3|h4|h5|h6)[^>]*>', '\n', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+def generate_post_with_gemini(news_item):
+    genai.configure(api_key=AI_API_KEY)
+    
     try:
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        logging.info(f"Доступные модели: {models}")
-        
-        preferred_patterns = [
-            r'gemini-3\.\d+-flash$',
-            r'gemini-3\.\d+-flash',
-            r'gemini-3-flash',
-            r'gemini-2\.5-flash$',
-            r'gemini-flash'
-        ]
-        
-        for pattern in preferred_patterns:
-            for model_name in models:
-                if re.search(pattern, model_name):
-                    logging.info(f"Используем модель: {model_name}")
-                    return model_name
-                    
-        if models:
-            selected = models[0]
-            logging.info(f"Используем доступную модель по умолчанию: {selected}")
-            return selected
-            
-    except Exception as e:
-        logging.warning(f"Не удалось получить список моделей: {e}. Используем запасной вариант.")
-        
-    return "models/gemini-1.5-flash"
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        priority = ['models/gemini-3.8-flash', 'models/gemini-3.7-flash', 'models/gemini-3.6-flash', 'models/gemini-2.5-flash']
+        selected_model = next((p for p in priority if p in available_models), available_models[0])
+    except Exception:
+        selected_model = 'models/gemini-2.5-flash'
 
-def generate_post_with_gemini(news_item: dict) -> str:
-    """Генерирует сочный, живой и интересный пост через Gemini AI."""
-    api_key = os.environ.get("AI_API_KEY")
-    if not api_key:
-        raise ValueError("AI_API_KEY не задан в переменных окружения!")
-
-    genai.configure(api_key=api_key)
-    model_name = get_working_model()
-    model = genai.GenerativeModel(model_name)
-
+    model = genai.GenerativeModel(selected_model)
+    
     prompt = f"""
-Ты — главный редактор и экспертный инсайдер ведущего Telegram-канала о рейв-культуре, электронной музыке, железе, VST-плагинах и битмейкинге.
+Ты — шеф-редактор стильного Telegram-канала для музыкантов, продюсеров, битмейкеров и любителей электронной и хип-хоп культуры в России и СНГ.
 
-Напиши СОЧНЫЙ, ЖИВОЙ и ИНТЕРЕСНЫЙ пост по новости ниже.
+Целевая аудитория: люди, которые пилят треки в FL Studio, Ableton, Logic, покупают или качают VST-плагины, интересуются железом, слушают свежие релизы и следят за индустрией.
 
-ТРЕБОВАНИЯ К ПОСТУ:
-1. СТИЛЬ: Написано энергичным, увлеченным и понятным языком для рейверов, диджеев и продюсеров. Без академической сухости.
-2. ЖАНРЫ И КОНТЕКСТ: При необходимости упоминай конкретные жанры (Techno, Drum & Bass, House, Trance, Ambient и др.) и интересные детали релиза/железа.
-3. СТРУКТУРА:
-   - Завлекающая первая строчка/заголовок с эмодзи.
-   - Основная суть и самое интересное (2 коротких аккуратных абзаца).
-   - Интригующий вывод или реакция.
-4. ФОРМАТИРОВАНИЕ: Используй ТОЛЬКО HTML-теги <b>для жирного</b> и <i>для курсива</i>. НЕ используй маркдаун (** или *), НЕ используй <p>, <div>, <br>.
-5. ЭМОДЗИ: Используй 3-5 стильных и уместных эмодзи по теме.
-6. ССЫЛКИ: Не вставляй ссылку в сам текст (она будет оформлена аккуратной кнопкой внизу).
-
-НОВОСТЬ ДЛЯ ОБРАБОТКИ:
+ОРИГИНАЛ НОВОСТИ:
 Заголовок: {news_item['title']}
-Содержимое: {news_item['summary']}
+Текст: {news_item['summary']}
+
+ИНСТРУКЦИЯ ПО НАПИСАНИЮ:
+1. ПРИОРИТЕТ ТЕМЫ:
+   - Если новость про VST, железо, DAW, сэмплирование или фишки продакшена — сделай упор на ПОЛЬЗУ для музыканта (что за прибор/софт, чем полезен в студии).
+   - Если новость про релиз/интервью (электроника, рэп, битмейкинг) — напиши стильно, подчеркни статус артиста или особенность звучания.
+   - Если новость про мелкий зарубежный клуб/локальный ивент в США — НЕ зацикливайся на месте проведения, переведи контекст на сам трек, артиста или тренд.
+
+2. СТИЛЬ И ТОН:
+   - Экспертный, живой, современный. Без сухого анонса и без глупого кликбейта/спама. 
+   - Пиши понятным языком профессионального музыкального комьюнити.
+
+3. ФОРМАТ И ОБЪЕМ:
+   - Длина строго от 400 до 650 символов (читается за 15 секунд).
+   - <b>Заголовок</b>: 1 яркая жирная строчка с сутью события.
+   - Тело поста: 2 коротких емких абзаца.
+   - 1-2 аккуратных эмодзи по теме.
+   - Разрешены ТОЛЬКО HTML-теги <b> для жирного и <i> для курсива.
+
+Напиши готовую публикацию:
 """
 
     response = model.generate_content(prompt)
-    post_text = clean_html_for_telegram(response.text.strip())
-    return post_text
+    return clean_html_for_telegram(response.text)
 
-def send_to_telegram(post_text: str, news_url: str, image_url: str | None = None):
-    """Отправляет пост в Telegram-канал с кнопкой-ссылкой на источник."""
-    bot_token = os.environ.get("BOT_TOKEN")
-    channel_id = os.environ.get("CHANNEL_ID")
+def send_to_telegram(post_text, news_link, image_url=None):
+    formatted_text = f"{post_text}\n\n<a href='{news_link}'>Читать источник ↗</a>"
+    
+    if image_url and len(formatted_text) <= 1000:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+        payload = {
+            "chat_id": CHANNEL_ID,
+            "photo": image_url,
+            "caption": formatted_text,
+            "parse_mode": "HTML"
+        }
+        res = requests.post(url, json=payload)
+        if res.status_code == 200:
+            logging.info("Пост с фото успешно опубликован!")
+            return
+        else:
+            logging.warning(f"Не удалось отправить фото ({res.text}). Отправляю текстом...")
 
-    if not bot_token or not channel_id:
-        raise ValueError("BOT_TOKEN или CHANNEL_ID не заданы!")
-
-    # Аккуратная и стильная кнопка-ссылка
-    reply_markup = {
-        "inline_keyboard": [
-            [{"text": "Читать источник ↗", "url": news_url}]
-        ]
-    }
-
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": channel_id,
+        "chat_id": CHANNEL_ID,
+        "text": formatted_text,
         "parse_mode": "HTML",
-        "reply_markup": json.dumps(reply_markup)
+        "disable_web_page_preview": False
     }
-
-    if image_url:
-        endpoint = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-        payload["photo"] = image_url
-        payload["caption"] = post_text
-    else:
-        endpoint = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload["text"] = post_text
-
-    response = requests.post(endpoint, data=payload, timeout=15)
-    
-    # Фолбэк: если ссылка на картинку не сработала, отправляем просто текст
-    if not response.ok and image_url:
-        logging.warning("Не удалось отправить фото, пробуем отправить только текст...")
-        endpoint = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload.pop("photo", None)
-        payload.pop("caption", None)
-        payload["text"] = post_text
-        response = requests.post(endpoint, data=payload, timeout=15)
-
-    if not response.ok:
-        logging.error(f"❌ Ошибка отправки в Telegram: {response.status_code}")
-        logging.error(f"Ответ API Telegram: {response.text}")
-    
-    response.raise_for_status()
-    logging.info("✅ Пост успешно опубликован в Telegram!")
+    res = requests.post(url, json=payload)
+    res.raise_for_status()
+    logging.info("Текстовый пост успешно опубликован!")
 
 def main():
+    if not all([BOT_TOKEN, CHANNEL_ID, AI_API_KEY]):
+        logging.error("КРИТИЧЕСКАЯ ОШИБКА: Не заданы переменные окружения!")
+        return
+
+    news_item = fetch_fresh_news()
+    if not news_item:
+        logging.info("Свежих новостей пока нет.")
+        return
+
+    logging.info("Генерирую текст поста...")
     try:
-        news_item = fetch_fresh_news()
-        if not news_item:
-            logging.info("Работа завершена, публикация не требуется.")
-            return
-
-        logging.info("Отправляю задачу в Gemini...")
         post_text = generate_post_with_gemini(news_item)
+    except Exception as e:
+        logging.error(f"Ошибка при генерации текста: {e}")
+        return
 
-        logging.info("Публикация поста в Telegram...")
+    logging.info("Публикация в Telegram...")
+    try:
         send_to_telegram(post_text, news_item['link'], news_item.get('image_url'))
-
-        # Сохранение ссылки в историю
+        
         history = load_history()
         history.append(news_item['link'])
         save_history(history)
-
     except Exception as e:
-        logging.error(f"Произошла ошибка при выполнении main(): {e}")
-        raise e
+        logging.error(f"Ошибка при отправке в Telegram: {e}")
 
 if __name__ == "__main__":
     main()
