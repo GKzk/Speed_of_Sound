@@ -10,23 +10,31 @@ import google.generativeai as genai
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Переменные окружения
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
 AI_API_KEY = os.environ.get("AI_API_KEY")
 
 HISTORY_FILE = "history.json"
 
-# Список проверенных источников RSS (Продвинутый продакшен, плагины, железо, мировой и ру-сегмент)
+# Расширенный список (добавлен эксклюзивный западный сегмент)
 RSS_FEEDS = [
-    "https://samesound.ru/feed",              # Главный ру-портал про продакшен, плагины, DAW и железо
-    "https://www.attackmagazine.com/feed/",   # Подробно про продакшен, синтез, битмейкинг и андеграунд
-    "https://www.gearnews.com/feed/",         # Оперативные новости про железо, VST, скидки и софт
-    "https://www.synthtopia.com/feed/",       # Синтезаторы, новинки софта и железные модули
-    "https://www.synthanatomy.com/feed",      # Бесплатные плагины, скидки, железный саунд-дизайн
-    "https://mixmag.net/rss.xml",             # Главные мировые релизы и тренды
-    "https://edm.com/.rss/full/",             # Релизы, индустрия, крупные инфоповоды
-    "https://djmag.com/rss.xml"               # Интервью, железо, топовые релизы
+    "https://cdm.link/feed/",                 # Create Digital Music (очень крутой гиковский ресурс)
+    "https://www.musicradar.com/rss",         # Обзоры софта, плагинов, техники
+    "https://www.attackmagazine.com/feed/",   
+    "https://www.gearnews.com/feed/",         
+    "https://www.synthtopia.com/feed/",       
+    "https://www.synthanatomy.com/feed",      
+    "https://mixmag.net/rss.xml",             
+    "https://djmag.com/rss.xml",              
+    "https://samesound.ru/feed"               # Оставляем, но теперь фильтруем
+]
+
+# Жесткий фильтр ценности. Новость берется ТОЛЬКО если содержит эти слова (на англ или рус)
+TARGET_KEYWORDS = [
+    'vst', 'plugin', 'плагин', 'ableton', 'fl studio', 'logic pro', 'cubase', 'daw',
+    'synth', 'синтезатор', 'драм-машина', 'сэмпл', 'sample', 'midi', 'миди',
+    'обновление', 'update', 'сведение', 'мастеринг', 'mixing', 'битмейкинг',
+    'релиз', 'album', 'release', 'интервью', 'interview', 'free', 'бесплатно'
 ]
 
 def load_history():
@@ -43,10 +51,10 @@ def save_history(history):
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history[-100:], f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logging.error(f"Ошибка сохранения истории: {e}")
+        logging.error(f"Ошибка сохранения: {e}")
 
 def extract_image_url(entry):
-    """Поиск обложки/картинки в RSS элементе"""
+    """Усиленный поиск картинки по всем возможным тегам"""
     if 'media_content' in entry and len(entry.media_content) > 0:
         return entry.media_content[0].get('url')
     if 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
@@ -57,9 +65,12 @@ def extract_image_url(entry):
             if enc.get('type', '').startswith('image/'):
                 return enc.get('href')
 
+    # Глубокий поиск в HTML контенте (часто решает проблему с ру-сайтами)
     html_content = ""
     if 'content' in entry:
-        html_content = entry.content[0].value
+        for c in entry.content:
+            if c.type == 'text/html':
+                html_content += c.value
     elif 'description' in entry:
         html_content = entry.description
 
@@ -70,12 +81,11 @@ def extract_image_url(entry):
             src = img['src']
             if src.startswith('http'):
                 return src
-
     return None
 
 def fetch_fresh_news():
     history = load_history()
-    logging.info("Начинаю сбор новостей из RSS...")
+    logging.info("Начинаю сбор новостей с фильтрацией...")
     
     for feed_url in RSS_FEEDS:
         try:
@@ -87,13 +97,21 @@ def fetch_fresh_news():
                 
                 title = entry.title
                 summary = getattr(entry, 'summary', '') or getattr(entry, 'description', '')
-                clean_summary = BeautifulSoup(summary, "html.parser").get_text()[:700]
-                image_url = extract_image_url(entry)
+                clean_summary = BeautifulSoup(summary, "html.parser").get_text()
                 
-                logging.info(f"Найдена новость: {title}. Картинка: {'Да' if image_url else 'Нет'}")
+                # ФИЛЬТРАЦИЯ: Проверяем, есть ли ценность в новости
+                text_to_check = (title + " " + clean_summary).lower()
+                if not any(kw in text_to_check for kw in TARGET_KEYWORDS):
+                    # Если тема проходная, помечаем в историю чтобы больше не проверять, и пропускаем
+                    history.append(link)
+                    save_history(history)
+                    continue
+
+                image_url = extract_image_url(entry)
+                logging.info(f"Найдена ЦЕЛЕВАЯ новость: {title}. Картинка: {'Да' if image_url else 'Нет'}")
                 return {
                     "title": title,
-                    "summary": clean_summary,
+                    "summary": clean_summary[:800],
                     "link": link,
                     "image_url": image_url
                 }
@@ -103,7 +121,6 @@ def fetch_fresh_news():
     return None
 
 def clean_html_for_telegram(text):
-    """Очистка HTML для Telegram API"""
     text = re.sub(r'</?(p|div|section|article|header|footer)[^>]*>', '\n', text)
     text = re.sub(r'<br\s*/?>', '\n', text)
     text = re.sub(r'</?(h1|h2|h3|h4|h5|h6)[^>]*>', '\n', text)
@@ -123,32 +140,22 @@ def generate_post_with_gemini(news_item):
     model = genai.GenerativeModel(selected_model)
     
     prompt = f"""
-Ты — шеф-редактор стильного Telegram-канала для музыкантов, продюсеров, битмейкеров и любителей электронной и хип-хоп культуры в России и СНГ.
+Ты — куратор и эксперт Telegram-канала для битмейкеров, саунд-продюсеров и музыкантов.
+Твоя задача — не просто перевести новость, а дать выжимку самого важного. Твой контент должен быть уникальным и полезным.
 
-Целевая аудитория: люди, которые пилят треки в FL Studio, Ableton, Logic, покупают или качают VST-плагины, интересуются железом, слушают свежие релизы и следят за индустрией.
-
-ОРИГИНАЛ НОВОСТИ:
+ОРИГИНАЛ:
 Заголовок: {news_item['title']}
 Текст: {news_item['summary']}
 
-ИНСТРУКЦИЯ ПО НАПИСАНИЮ:
-1. ПРИОРИТЕТ ТЕМЫ:
-   - Если новость про VST, железо, DAW, сэмплирование или фишки продакшена — сделай упор на ПОЛЬЗУ для музыканта (что за прибор/софт, чем полезен в студии).
-   - Если новость про релиз/интервью (электроника, рэп, битмейкинг) — напиши стильно, подчеркни статус артиста или особенность звучания.
-   - Если новость про мелкий зарубежный клуб/локальный ивент в США — НЕ зацикливайся на месте проведения, переведи контекст на сам трек, артиста или тренд.
+ПРАВИЛА:
+1. Сделай <b>цепляющий, но строгий заголовок</b>.
+2. В первом абзаце — суть новости (что вышло/что случилось).
+3. Во втором абзаце — добавочная ценность (аналитика): как это повлияет на продакшен, почему этот плагин/релиз заслуживает внимания, как это можно использовать на практике. 
+4. Пиши профессиональным, но живым языком. Без воды.
+5. Строго до 650 символов! Текст должен легко читаться.
+6. Разрешены только HTML-теги <b> (жирный) и <i> (курсив).
 
-2. СТИЛЬ И ТОН:
-   - Экспертный, живой, современный. Без сухого анонса и без глупого кликбейта/спама. 
-   - Пиши понятным языком профессионального музыкального комьюнити.
-
-3. ФОРМАТ И ОБЪЕМ:
-   - Длина строго от 400 до 650 символов (читается за 15 секунд).
-   - <b>Заголовок</b>: 1 яркая жирная строчка с сутью события.
-   - Тело поста: 2 коротких емких абзаца.
-   - 1-2 аккуратных эмодзи по теме.
-   - Разрешены ТОЛЬКО HTML-теги <b> для жирного и <i> для курсива.
-
-Напиши готовую публикацию:
+Напиши пост:
 """
 
     response = model.generate_content(prompt)
@@ -157,7 +164,7 @@ def generate_post_with_gemini(news_item):
 def send_to_telegram(post_text, news_link, image_url=None):
     formatted_text = f"{post_text}\n\n<a href='{news_link}'>Читать источник ↗</a>"
     
-    if image_url and len(formatted_text) <= 1000:
+    if image_url and len(formatted_text) <= 1024:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
         payload = {
             "chat_id": CHANNEL_ID,
@@ -170,7 +177,7 @@ def send_to_telegram(post_text, news_link, image_url=None):
             logging.info("Пост с фото успешно опубликован!")
             return
         else:
-            logging.warning(f"Не удалось отправить фото ({res.text}). Отправляю текстом...")
+            logging.warning(f"Ошибка фото ({res.text}). Пробую текстом...")
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
@@ -185,30 +192,24 @@ def send_to_telegram(post_text, news_link, image_url=None):
 
 def main():
     if not all([BOT_TOKEN, CHANNEL_ID, AI_API_KEY]):
-        logging.error("КРИТИЧЕСКАЯ ОШИБКА: Не заданы переменные окружения!")
+        logging.error("Нет токенов!")
         return
 
     news_item = fetch_fresh_news()
     if not news_item:
-        logging.info("Свежих новостей пока нет.")
+        logging.info("Свежих целевых новостей пока нет.")
         return
 
     logging.info("Генерирую текст поста...")
     try:
         post_text = generate_post_with_gemini(news_item)
-    except Exception as e:
-        logging.error(f"Ошибка при генерации текста: {e}")
-        return
-
-    logging.info("Публикация в Telegram...")
-    try:
         send_to_telegram(post_text, news_item['link'], news_item.get('image_url'))
         
         history = load_history()
         history.append(news_item['link'])
         save_history(history)
     except Exception as e:
-        logging.error(f"Ошибка при отправке в Telegram: {e}")
+        logging.error(f"Ошибка: {e}")
 
 if __name__ == "__main__":
     main()
