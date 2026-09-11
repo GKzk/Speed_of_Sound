@@ -2,6 +2,8 @@ import os
 import re
 import json
 import logging
+import random
+from urllib.parse import urlparse
 import requests
 import feedparser
 from bs4 import BeautifulSoup
@@ -16,20 +18,18 @@ AI_API_KEY = os.environ.get("AI_API_KEY")
 
 HISTORY_FILE = "history.json"
 
-# Расширенный список (добавлен эксклюзивный западный сегмент)
 RSS_FEEDS = [
-    "https://cdm.link/feed/",                 # Create Digital Music (очень крутой гиковский ресурс)
-    "https://www.musicradar.com/rss",         # Обзоры софта, плагинов, техники
-    "https://www.attackmagazine.com/feed/",   
-    "https://www.gearnews.com/feed/",         
-    "https://www.synthtopia.com/feed/",       
-    "https://www.synthanatomy.com/feed",      
-    "https://mixmag.net/rss.xml",             
-    "https://djmag.com/rss.xml",              
-    "https://samesound.ru/feed"               # Оставляем, но теперь фильтруем
+    "https://cdm.link/feed/",
+    "https://www.musicradar.com/rss",
+    "https://www.attackmagazine.com/feed/",
+    "https://www.gearnews.com/feed/",
+    "https://www.synthtopia.com/feed/",
+    "https://www.synthanatomy.com/feed",
+    "https://mixmag.net/rss.xml",
+    "https://djmag.com/rss.xml",
+    "https://samesound.ru/feed"
 ]
 
-# Жесткий фильтр ценности. Новость берется ТОЛЬКО если содержит эти слова (на англ или рус)
 TARGET_KEYWORDS = [
     'vst', 'plugin', 'плагин', 'ableton', 'fl studio', 'logic pro', 'cubase', 'daw',
     'synth', 'синтезатор', 'драм-машина', 'сэмпл', 'sample', 'midi', 'миди',
@@ -51,10 +51,9 @@ def save_history(history):
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history[-100:], f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logging.error(f"Ошибка сохранения: {e}")
+        logging.error(f"Ошибка сохранения истории: {e}")
 
 def extract_image_url(entry):
-    """Усиленный поиск картинки по всем возможным тегам"""
     if 'media_content' in entry and len(entry.media_content) > 0:
         return entry.media_content[0].get('url')
     if 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
@@ -65,7 +64,6 @@ def extract_image_url(entry):
             if enc.get('type', '').startswith('image/'):
                 return enc.get('href')
 
-    # Глубокий поиск в HTML контенте (часто решает проблему с ру-сайтами)
     html_content = ""
     if 'content' in entry:
         for c in entry.content:
@@ -85,9 +83,15 @@ def extract_image_url(entry):
 
 def fetch_fresh_news():
     history = load_history()
-    logging.info("Начинаю сбор новостей с фильтрацией...")
+    logging.info("Начинаю сбор новостей с ротацией источников...")
     
-    for feed_url in RSS_FEEDS:
+    # Перемешиваем порядок опроса лент
+    feeds_to_check = RSS_FEEDS.copy()
+    random.shuffle(feeds_to_check)
+    
+    candidates = []
+    
+    for feed_url in feeds_to_check:
         try:
             feed = feedparser.parse(feed_url)
             for entry in feed.entries:
@@ -99,26 +103,46 @@ def fetch_fresh_news():
                 summary = getattr(entry, 'summary', '') or getattr(entry, 'description', '')
                 clean_summary = BeautifulSoup(summary, "html.parser").get_text()
                 
-                # ФИЛЬТРАЦИЯ: Проверяем, есть ли ценность в новости
                 text_to_check = (title + " " + clean_summary).lower()
                 if not any(kw in text_to_check for kw in TARGET_KEYWORDS):
-                    # Если тема проходная, помечаем в историю чтобы больше не проверять, и пропускаем
                     history.append(link)
                     save_history(history)
                     continue
 
                 image_url = extract_image_url(entry)
-                logging.info(f"Найдена ЦЕЛЕВАЯ новость: {title}. Картинка: {'Да' if image_url else 'Нет'}")
-                return {
+                candidates.append({
                     "title": title,
                     "summary": clean_summary[:800],
                     "link": link,
                     "image_url": image_url
-                }
+                })
+                # Берем только 1 свежую новость с каждого сайта в список кандидатов
+                break
         except Exception as e:
             logging.error(f"Ошибка при парсинге {feed_url}: {e}")
-            
-    return None
+
+    if not candidates:
+        return None
+
+    # Достаем домен последней опубликованной новости из истории
+    last_domain = ""
+    if history:
+        for old_link in reversed(history):
+            if old_link.startswith("http"):
+                last_domain = urlparse(old_link).netloc
+                break
+
+    # Фильтруем кандидатов: убираем тот же сайт, что был в прошлый раз
+    different_source_candidates = [
+        c for c in candidates if urlparse(c['link']).netloc != last_domain
+    ]
+
+    # Если есть новости с ДРУГИХ сайтов — берем случайно из них, иначе из общего списка
+    selected_news = random.choice(different_source_candidates) if different_source_candidates else random.choice(candidates)
+    
+    logging.info(f"Выбрана новость с источника {urlparse(selected_news['link']).netloc}: {selected_news['title']}")
+    return selected_news
+
 
 def clean_html_for_telegram(text):
     text = re.sub(r'</?(p|div|section|article|header|footer)[^>]*>', '\n', text)
