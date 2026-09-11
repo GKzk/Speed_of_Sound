@@ -154,13 +154,31 @@ def clean_html_for_telegram(text):
 def generate_post_with_gemini(news_item):
     genai.configure(api_key=AI_API_KEY)
     
-    # Список моделей по приоритету (если одна исчерпала лимит — пробуем следующую)
-    candidate_models = [
-        'gemini-2.5-flash',
-        'gemini-1.5-flash',
-        'gemini-2.0-flash',
-        'gemini-3.8-flash'
-    ]
+    # 1. Автоматически запрашиваем список всех АКТИВНЫХ моделей у Google API
+    candidate_models = []
+    try:
+        all_models = [
+            m.name.replace('models/', '') 
+            for m in genai.list_models() 
+            if 'generateContent' in m.supported_generation_methods
+        ]
+        # Отбираем только актуальные flash-модели
+        flash_models = [m for m in all_models if 'flash' in m]
+        
+        # Приоритет отдаем рекомендуемой gemini-3.6-flash, затем остальным
+        priority = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash']
+        candidate_models = [m for m in priority if m in flash_models]
+        
+        # Добавляем остальные найденные flash-модели в конец списка
+        for m in flash_models:
+            if m not in candidate_models:
+                candidate_models.append(m)
+    except Exception as e:
+        logging.warning(f"Не удалось динамически получить список моделей: {e}")
+
+    # Запасной список, если запрос списка моделей не сработал
+    if not candidate_models:
+        candidate_models = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash']
 
     prompt = f"""
 Ты — куратор и эксперт Telegram-канала для битмейкеров, саунд-продюсеров и музыкантов, а также музыкальный журналист и ценитель качественной электронной музыки, внимательно следящий за новыми интересными релизами и трендами сцены.
@@ -190,9 +208,10 @@ def generate_post_with_gemini(news_item):
             response = model.generate_content(prompt)
             return clean_html_for_telegram(response.text)
         except Exception as e:
-            logging.warning(f"Модель {model_name} выдала ошибку лимита/доступа ({e}). Перехожу к следующей...")
+            logging.warning(f"Модель {model_name} вернула ошибку ({e}). Перехожу к следующей...")
 
-    raise RuntimeError("Все доступные модели Gemini исчерпали дневной лимит!")
+    raise RuntimeError("Ни одна из актуальных моделей Gemini не доступна.")
+
 
 
 def send_to_telegram(post_text, news_link, image_url=None):
