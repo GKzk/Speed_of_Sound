@@ -130,18 +130,17 @@ def clean_html_for_telegram(text):
 def generate_post_with_gemini(news_item):
     genai.configure(api_key=AI_API_KEY)
     
-    try:
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        priority = ['models/gemini-3.8-flash', 'models/gemini-3.7-flash', 'models/gemini-3.6-flash', 'models/gemini-2.5-flash']
-        selected_model = next((p for p in priority if p in available_models), available_models[0])
-    except Exception:
-        selected_model = 'models/gemini-2.5-flash'
+    # Список моделей по приоритету (если одна исчерпала лимит — пробуем следующую)
+    candidate_models = [
+        'gemini-2.5-flash',
+        'gemini-1.5-flash',
+        'gemini-2.0-flash',
+        'gemini-3.8-flash'
+    ]
 
-    model = genai.GenerativeModel(selected_model)
-    
     prompt = f"""
-Ты — куратор и эксперт Telegram-канала для битмейкеров, саунд-продюсеров и музыкантов.
-Твоя задача — дать выжимку самого важного из новости и сделать полезный пост.
+Ты — куратор и эксперт Telegram-канала для битмейкеров, саунд-продюсеров и музыкантов, а также музыкальный журналист и ценитель качественной электронной музыки, внимательно следящий за новыми интересными релизами и трендами сцены.
+Твоя задача — дать выжимку самого важного из новости и сделать полезный, стильный пост.
 
 ОРИГИНАЛ:
 Заголовок: {news_item['title']}
@@ -150,8 +149,8 @@ def generate_post_with_gemini(news_item):
 ПРАВИЛА:
 1. Сделай <b>цепляющий, но строгий заголовок</b>.
 2. В первом абзаце — суть новости (что вышло/что случилось).
-3. Во втором абзаце — добавочная ценность (аналитика): как это повлияет на продакшен, почему это заслуживает внимания, практическая польза.
-4. Пиши профессиональным, но живым языком. Без воды.
+3. Во втором абзаце — добавочная ценность (аналитика): как это повлияет на продакшен, почему этот релиз/софт заслуживает внимания, практическая польза для музыканта.
+4. Пиши профессиональным, знающим, но живым языком. Без лишней воды.
 5. Строго до 650 символов!
 6. В самом конце поста обязательно добавь 2-3 релевантных хештега СТРОГО из этого списка: 
    #vst #plugins #daw #ableton #flstudio #freebies #железо #hardware #synths #синтез #drummachine #продакшен #production #sounddesign #mixing #mastering #beatmaking #samples #релизы #releases #news #interview
@@ -160,8 +159,17 @@ def generate_post_with_gemini(news_item):
 Напиши пост:
 """
 
-    response = model.generate_content(prompt)
-    return clean_html_for_telegram(response.text)
+    for model_name in candidate_models:
+        try:
+            logging.info(f"Пробую сгенерировать пост через модель: {model_name}")
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            return clean_html_for_telegram(response.text)
+        except Exception as e:
+            logging.warning(f"Модель {model_name} выдала ошибку лимита/доступа ({e}). Перехожу к следующей...")
+
+    raise RuntimeError("Все доступные модели Gemini исчерпали дневной лимит!")
+
 
 def send_to_telegram(post_text, news_link, image_url=None):
     formatted_text = f"{post_text}\n\n<a href='{news_link}'>Читать источник ↗</a>"
