@@ -42,7 +42,8 @@ FEEDS_TECH = [
 KEYWORDS_MUSIC = [
     'релиз', 'альбом', 'трек', 'album', 'track', 'ep', 'клип', 'video',
     'хип-хоп', 'hip hop', 'рэп', 'rap', 'trap', 'drill', 'электроника', 'electronic',
-    'techno', 'house', 'rave', 'премьера', 'новинка', 'сингл', 'single', 'слушать', 'review'
+    'techno', 'house', 'rave', 'премьера', 'новинка', 'сингл', 'single', 'слушать', 'review',
+    'плейлист', 'playlist', 'подборка', 'микстейп', 'mixtape'
 ]
 
 KEYWORDS_TECH = [
@@ -83,12 +84,21 @@ def mark_digest_sent():
     with open(DIGEST_STATE_FILE, "w", encoding="utf-8") as f:
         f.write(today_str)
 
+def clean_html_for_telegram(text):
+    text = re.sub(r'</?(p|div|section|article|header|footer|html|body)[^>]*>', '\n', text)
+    text = re.sub(r'<br\s*/?>', '\n', text)
+    text = re.sub(r'</?(h1|h2|h3|h4|h5|h6)[^>]*>', '\n', text)
+    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+    return text
+
+# === ИЗВЛЕЧЕНИЕ ИЗОБРАЖЕНИЙ (С ПРОВЕРКОЙ WEB-СТРАНИЦЫ) ===
+
 def extract_image_url(entry):
+    """Сначала пробуем достать картинку из RSS-данных"""
     if 'media_content' in entry and len(entry.media_content) > 0:
         return entry.media_content[0].get('url')
     if 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
         return entry.media_thumbnail[0].get('url')
-        
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             if enc.get('type', '').startswith('image/'):
@@ -97,8 +107,7 @@ def extract_image_url(entry):
     html_content = ""
     if 'content' in entry:
         for c in entry.content:
-            if c.type == 'text/html':
-                html_content += c.value
+            html_content += c.value
     elif 'description' in entry:
         html_content = entry.description
 
@@ -109,25 +118,29 @@ def extract_image_url(entry):
             return img['src']
     return None
 
-def clean_html_for_telegram(text):
-    text = re.sub(r'</?(p|div|section|article|header|footer|html|body)[^>]*>', '\n', text)
-    text = re.sub(r'<br\s*/?>', '\n', text)
-    text = re.sub(r'</?(h1|h2|h3|h4|h5|h6)[^>]*>', '\n', text)
-    text = re.sub(r'\n{3,}', '\n\n', text).strip()
-    return text
+def fetch_og_image_fallback(article_url):
+    """Если в RSS картинки нет, вытаскиваем оригинальную обложку (og:image) прямо со страницы"""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(article_url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            og_img = soup.find('meta', property='og:image')
+            if og_img and og_img.get('content') and og_img['content'].startswith('http'):
+                return og_img['content']
+            tw_img = soup.find('meta', attrs={'name': 'twitter:image'})
+            if tw_img and tw_img.get('content') and tw_img['content'].startswith('http'):
+                return tw_img['content']
+    except Exception as e:
+        logging.warning(f"Не удалось спарсить og:image со страницы: {e}")
+    return None
 
 # === УМНЫЙ ПОИСК СТРИМИНГОВ ЧЕРЕЗ SONGLINK / ODESLI ===
 
 def find_streaming_links(search_query, raw_html=""):
-    """
-    1. Ищет прямые ссылки на стриминги в тексте статьи.
-    2. Если нет — ищет трек через iTunes API.
-    3. Полученный URL отправляет в Odesli API для генерации мультиссылки.
-    """
     headers = {"User-Agent": "SpeedOfSoundBot/1.0"}
     streaming_url = None
 
-    # 1. Поиск ссылок в тексте новости
     if raw_html:
         patterns = [
             r'https?://open\.spotify\.com/(?:track|album)/[a-zA-Z0-9]+',
@@ -140,10 +153,9 @@ def find_streaming_links(search_query, raw_html=""):
             match = re.search(pattern, raw_html)
             if match:
                 streaming_url = match.group(0)
-                logging.info(f"Найдена прямая ссылка на стриминг в новости: {streaming_url}")
+                logging.info(f"Найдена прямая ссылка в статье: {streaming_url}")
                 break
 
-    # 2. Поиск через iTunes Search API
     if not streaming_url and search_query:
         try:
             itunes_url = f"https://itunes.apple.com/search?term={urllib.parse.quote(search_query)}&media=music&limit=1"
@@ -157,80 +169,59 @@ def find_streaming_links(search_query, raw_html=""):
         except Exception as e:
             logging.warning(f"Ошибка iTunes API: {e}")
 
-    # 3. Резолв через Odesli / Songlink
     if streaming_url:
         try:
             odesli_url = f"https://api.song.link/v1-alpha.1/links?url={urllib.parse.quote(streaming_url)}&userCountry=RU"
             res = requests.get(odesli_url, headers=headers, timeout=6)
             if res.status_code == 200:
                 data = res.json()
-                page_url = data.get('pageUrl')
                 platforms = data.get('linksByPlatform', {})
                 return {
-                    "page_url": page_url,
+                    "page_url": data.get('pageUrl'),
                     "yandex": platforms.get('yandex', {}).get('url'),
-                    "spotify": platforms.get('spotify', {}).get('url'),
-                    "apple": platforms.get('appleMusic', {}).get('url')
+                    "spotify": platforms.get('spotify', {}).get('url')
                 }
         except Exception as e:
             logging.warning(f"Ошибка Odesli API: {e}")
 
-    # 4. Фолбек: прямые ссылки на поиск в сервисах
     if search_query:
         q_enc = urllib.parse.quote(search_query)
         return {
             "page_url": None,
             "yandex": f"https://music.yandex.ru/search?text={q_enc}",
-            "spotify": f"https://open.spotify.com/search/{q_enc}",
-            "apple": None
+            "spotify": f"https://open.spotify.com/search/{q_enc}"
         }
 
     return None
 
-# === ИНЛАЙН-КНОПКИ (REPLY_MARKUP) ===
+# === КЛАВИАТУРЫ ДЛЯ TELEGRAM ===
 
 def build_music_keyboard(links, news_link):
     keyboard = []
-    
     if links:
-        # Универсальная мультиссылка (song.link / album.link)
         if links.get("page_url"):
-            keyboard.append([
-                {"text": "🎧 Слушать релиз (все сервисы)", "url": links["page_url"]}
-            ])
-            
-        # Кнопки быстрого перехода на Яндекс / Spotify в один ряд
+            keyboard.append([{"text": "🎧 Слушать релиз (все площадки)", "url": links["page_url"]}])
         service_row = []
         if links.get("yandex"):
             service_row.append({"text": "🔴 Яндекс Музыка", "url": links["yandex"]})
         if links.get("spotify"):
             service_row.append({"text": "🟢 Spotify", "url": links["spotify"]})
-            
         if service_row:
             keyboard.append(service_row)
 
-    # Кнопка первоисточника
     if news_link:
-        keyboard.append([
-            {"text": "🔗 Читать первоисточник", "url": news_link}
-        ])
-
+        keyboard.append([{"text": "🔗 Читать первоисточник", "url": news_link}])
     return {"inline_keyboard": keyboard} if keyboard else None
 
-def build_tech_keyboard(news_link):
+def build_default_keyboard(news_link):
     if not news_link:
         return None
-    return {
-        "inline_keyboard": [
-            [{"text": "🔗 Подробнее / Первоисточник", "url": news_link}]
-        ]
-    }
+    return {"inline_keyboard": [[{"text": "🔗 Читать первоисточник", "url": news_link}]]}
 
 # === КАСКАД МОДЕЛЕЙ GEMINI ===
 
 def generate_text_with_fallback(prompt):
     genai.configure(api_key=AI_API_KEY)
-    
     models_to_try = [
         'gemini-3.8-flash',
         'gemini-3.7-flash',
@@ -247,52 +238,55 @@ def generate_text_with_fallback(prompt):
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(prompt)
             if response and response.text:
-                logging.info(f"Успешно сгенерировано через {model_name}")
                 return response.text
         except Exception as e:
             err = str(e).lower()
             if '429' in err or 'quota' in err or 'exhausted' in err:
-                logging.warning(f"[{model_name}] Исчерпан лимит (429 Quota). Переключаюсь...")
-            elif '404' in err or 'not found' in err:
-                logging.warning(f"[{model_name}] Модель не найдена в API. Переключаюсь...")
+                logging.warning(f"[{model_name}] Лимит исчерпан. Перехожу дальше...")
             else:
-                logging.warning(f"[{model_name}] Ошибка: {e}. Переключаюсь...")
+                logging.warning(f"[{model_name}] Ошибка: {e}. Перехожу дальше...")
 
-    raise RuntimeError("Все доступные модели Gemini вернули ошибки или исчерпали лимиты.")
+    raise RuntimeError("Все доступные модели Gemini вернули ошибку.")
 
-# === ГЕНЕРАЦИЯ ПОСТОВ ===
+# === ГЕНЕРАЦИЯ ПОСТОВ С УМНОЙ ЛОГИКОЙ ===
 
 def generate_music_post(news_item):
     prompt = f"""
-Ты — музыкальный редактор и диггер Telegram-канала "Speed of Sound" (@speed_sound).
-Перед тобой новость о музыкальном релизе/треке/альбоме.
-Сделай яркий, стильный пост для широкой аудитории (меломанов и битмейкеров).
+Ты — музыкальный редактор и журналист Telegram-канала "Speed of Sound" (@speed_sound).
+Канал читают как любители актуальной музыки, так и продюсеры.
+Твоя цель — написать емкий, стильный и логичный пост без дешевого кликбейта и пафоса.
 
 ОРИГИНАЛЬНАЯ НОВОСТЬ:
 Заголовок: {news_item['title']}
 Текст: {news_item['summary']}
 
-ПРАВИЛА ОФОРМЛЕНИЯ:
-1. Заголовок: Сочный, цепляющий, на русском языке в теге <b>...</b>.
-2. В первой строке поста под заголовком сделай карточку релиза:
-   🎧 <b>Жанр:</b> [Жанр] | <b>Вайб:</b> [2-3 слова об атмосфере]
-3. Основной текст (1-2 абзаца): В чем уникальность релиза, как звучит бас/бит/вокал, почему этот трек стоит послушать прямо сейчас. Пиши живо, вкусно, без занудства.
-4. Объем текста строго до 650 символов!
-5. Хештеги в конце: 2-3 штуки (#новинка #хипхоп #электроника #релиз #speedofsound)
-6. Разрешены ТОЛЬКО HTML-теги <b> и <i>. Никакого Markdown (**).
-7. В САМОЙ ПОСЛЕДНЕЙ СТРОКЕ ОБЯЗАТЕЛЬНО добавь служебную строку для поиска:
-SEARCH: Исполнитель - Название трека или альбома
+СТРОГИЕ ПРАВИЛА:
+1. Заголовок: Сочный, журналистский, отражающий суть, в теге <b>...</b>.
+2. КАРТОЧКА РЕЛИЗА (СТРОГО ПО УСЛОВИЮ):
+   - Если новость посвящена КОНКРЕТНОМУ треку, синглу, альбому, клипу или плейлисту — добавь под заголовком строчку:
+     🎧 <b>Жанр:</b> [Жанр] | <b>Вайб:</b> [2-3 слова о настроении]
+   - Если это новость индустрии, скандал, закон, нейросети (как Suno/Udio), фестиваль или конфликт артистов — КАРТОЧКУ ВАЙБА НЕ ПИШИ ВООБЩЕ!
+3. Первый абзац: Факты без воды. Что произошло / кто что выпустил / в чем суть инфоповода.
+4. Второй абзац (Добавочная ценность): Трезвый анализ. 
+   - Запрещено использовать клише: "главный звоночек года", "переворот в игре", "битва титанов", "навсегда изменит".
+   - Пиши логично: почему это интересно слушателю, какие юридические/индустриальные последствия это несет или какие фишки звука/продакшена стоит подметить в релизе.
+5. Объем текста: до 650 символов!
+6. Хештеги в конце: 2-3 релевантных (#релиз #хипхоп #электроника #новости #speedofsound).
+7. СЛУЖЕБНАЯ СТРОКА В САМОМ КОНЦЕ:
+   - Если это релиз/плейлист: напиши "SEARCH: Артист - Название" (только имя и трек).
+   - Если это общая новость индустрии без конкретного трека: напиши "SEARCH: NONE".
 
 Напиши пост:
 """
     raw_text = generate_text_with_fallback(prompt)
     
-    # Извлекаем поисковый запрос и очищаем пост от служебной строки
     search_query = ""
     cleaned_lines = []
     for line in raw_text.strip().split('\n'):
         if line.strip().startswith('SEARCH:'):
-            search_query = line.replace('SEARCH:', '').strip()
+            val = line.replace('SEARCH:', '').strip()
+            if val != "NONE" and len(val) > 2:
+                search_query = val
         else:
             cleaned_lines.append(line)
             
@@ -301,21 +295,20 @@ SEARCH: Исполнитель - Название трека или альбом
 
 def generate_tech_post(news_item):
     prompt = f"""
-Ты — куратор Telegram-канала "Speed of Sound" (@speed_sound) и опытный саунд-продюсер.
-Перед тобой новость про софт, плагин, девайс или фишку для продакшена.
-Сделай полезный, емкий пост без занудства.
+Ты — куратор Telegram-канала "Speed of Sound" (@speed_sound) и саунд-продюсер.
+Перед тобой новость про студийный софт, плагин, девайс или инструмент.
 
-ОРИГИНАЛЬНАЯ НОВОСТЬ:
+ОРИГИНАЛ:
 Заголовок: {news_item['title']}
 Текст: {news_item['summary']}
 
 ПРАВИЛА:
-1. Заголовок: Емкий и прикладной, в теге <b>...</b>.
-2. Первый абзац: Суть девайса/обновления (что делает этот инструмент или софт).
-3. Второй абзац: Реальная польза (как разгоняет воркфлоу, какой звук дает, кому пригодится в сетапе).
-4. Длина: строго до 600 символов!
-5. Хештеги в конце: #продакшен #vst #железо #ableton #plugins #speedofsound
-6. Разрешены ТОЛЬКО HTML-теги <b> и <i>. Никаких звездочек Markdown.
+1. Заголовок: Прикладной и конкретный, в <b>...</b>. Без клише.
+2. Первый абзац: Что за инструмент/плагин и для чего он нужен.
+3. Второй абзац: Практическая польза. Как это помогает экономить время или улучшить микс. Пиши простым языком для продюсеров и музыкантов.
+4. Объем текста: до 550 символов!
+5. Хештеги: #продакшен #vst #ableton #plugins #speedofsound
+6. Только теги <b> и <i>.
 
 Напиши пост:
 """
@@ -336,44 +329,41 @@ def gather_weekly_context():
 def generate_friday_digest():
     context = gather_weekly_context()
     prompt = f"""
-Ты — музыкальный редактор канала "Speed of Sound". Сегодня пятница — New Music Friday!
-Вот релизы и новости недели:
+Ты — музыкальный редактор "Speed of Sound". Пятница — день главных музыкальных релизов!
+Вот список новостей и премьер недели:
 {context}
 
 ЗАДАЧА:
-Составь "🔥 Пятничный дайджест: 7-8 главных релизов недели".
-Фокус: зарубежный и русскоязычный хип-хоп, клубная и домашняя электроника, самые обсуждаемые альбомы.
+Собери "🔥 Пятничный дайджест: 7-8 главных релизов недели".
+Фокус: зарубежный и русскоязычный рэп/хип-хоп, клубная и атмосферная электроника, громкие альбомы.
 - Пронумерованный список от 1 до 8.
-- Артист — Название: в 1-2 предложениях опиши, почему релиз заслуживает внимания.
-- После каждого трека добавь: "🎧 Слушать на площадках".
-- Используй HTML-тег <b> для названий. Без markdown-звездочек. До 2200 символов.
+- Артист — Название: в 1-2 емких предложениях опиши, почему релиз стоит заценить.
+- Без пафосных штампов, пиши со вкусом и по делу.
+- В конце каждого трека напиши: "🎧 Слушать на площадках".
+- Только HTML <b>. Лимит 2200 знаков.
 """
     raw_text = generate_text_with_fallback(prompt)
     return clean_html_for_telegram(raw_text)
 
-# === ОТПРАВКА В TELEGRAM С ИНЛАЙН-КНОПКАМИ ===
+# === ОТПРАВКА В TELEGRAM ===
 
 def send_to_telegram(text, image_url=None, reply_markup=None, target_chat_id=CHANNEL_ID):
     url_base = f"https://api.telegram.org/bot{BOT_TOKEN}/"
-    
-    payload = {
-        "chat_id": target_chat_id,
-        "parse_mode": "HTML"
-    }
+    payload = {"chat_id": target_chat_id, "parse_mode": "HTML"}
     if reply_markup:
         payload["reply_markup"] = reply_markup
         
-    # 1. С фото
+    # Отправка с фото
     if image_url and len(text) <= 1024:
         payload["photo"] = image_url
         payload["caption"] = text
         res = requests.post(url_base + "sendPhoto", json=payload)
         if res.status_code == 200:
-            logging.info("Пост с фото и кнопками успешно опубликован.")
+            logging.info("Пост с изображением опубликован.")
             return True
-        logging.warning(f"Не удалось отправить фото: {res.text}. Пробую текстом...")
+        logging.warning(f"Ошибка фото ({res.text}). Пробую текстом...")
 
-    # 2. Текстом
+    # Отправка текстом
     payload.pop("photo", None)
     payload.pop("caption", None)
     payload["text"] = text
@@ -381,10 +371,10 @@ def send_to_telegram(text, image_url=None, reply_markup=None, target_chat_id=CHA
     
     res = requests.post(url_base + "sendMessage", json=payload)
     if res.status_code == 200:
-        logging.info("Текстовый пост с кнопками успешно опубликован.")
+        logging.info("Текстовый пост опубликован.")
         return True
     
-    logging.error(f"Ошибка отправки сообщения: {res.text}")
+    logging.error(f"Ошибка TG API: {res.text}")
     return False
 
 # === СБОР КАНДИДАТОВ ИЗ ЛЕНТ ===
@@ -409,19 +399,21 @@ def collect_from_feeds(feed_urls, target_keywords, history):
                 text_to_check = (title + " " + clean_summary).lower()
                 
                 if any(kw in text_to_check for kw in target_keywords):
-                    # Сохраняем raw HTML для поиска ссылок на стриминги
                     raw_html = ""
                     if 'content' in entry:
                         for c in entry.content:
                             raw_html += c.value
                     raw_html += (summary or '')
 
+                    # Извлекаем картинку из RSS
+                    img_url = extract_image_url(entry)
+
                     candidates.append({
                         "title": title,
                         "summary": clean_summary[:800],
                         "raw_html": raw_html,
                         "link": link,
-                        "image_url": extract_image_url(entry),
+                        "image_url": img_url,
                         "domain": urlparse(link).netloc
                     })
                     break
@@ -438,7 +430,7 @@ def main():
             f.write("")
 
     if not all([BOT_TOKEN, CHANNEL_ID, AI_API_KEY]):
-        logging.error("Отсутствуют обязательные токены!")
+        logging.error("Отсутствуют токены в Secrets!")
         return
 
     now = datetime.datetime.now()
@@ -447,9 +439,9 @@ def main():
     # 1. ПЯТНИЧНЫЙ ДАЙДЖЕСТ
     if is_friday_morning:
         if not ADMIN_ID:
-            logging.warning("Пятница утро, но ADMIN_ID не задан!")
+            logging.warning("Пятница, но ADMIN_ID не задан!")
         elif not is_digest_sent_today():
-            logging.info("Пятница до обеда: отправка дайджеста в ЛС...")
+            logging.info("Пятница: отправка дайджеста в ЛС...")
             try:
                 digest = generate_friday_digest()
                 notice = (
@@ -460,7 +452,7 @@ def main():
                 success = send_to_telegram(notice, target_chat_id=ADMIN_ID)
                 if success:
                     mark_digest_sent()
-                    logging.info("Дайджест отправлен админу.")
+                    logging.info("Дайджест доставлен админу.")
             except Exception as e:
                 logging.error(f"Ошибка дайджеста: {e}")
             return
@@ -469,23 +461,20 @@ def main():
 
     # 2. РЕГУЛЯРНЫЙ ПОСТИНГ: 70% МУЗЫКА, 30% ТЕХНИКА
     history = load_history()
-    
     pick_music = random.random() < 0.70
-    primary_category = "music" if pick_music else "tech"
-    logging.info(f"Бросок вероятности: выбрана категория [{primary_category.upper()}] (70/30 split)")
+    primary_cat = "music" if pick_music else "tech"
+    logging.info(f"Выбрана категория: [{primary_cat.upper()}]")
 
     if pick_music:
         candidates = collect_from_feeds(FEEDS_MUSIC, KEYWORDS_MUSIC, history)
         category = "music"
         if not candidates:
-            logging.info("Свежей музыки не нашлось, проверяю софт/железо...")
             candidates = collect_from_feeds(FEEDS_TECH, KEYWORDS_TECH, history)
             category = "tech"
     else:
         candidates = collect_from_feeds(FEEDS_TECH, KEYWORDS_TECH, history)
         category = "tech"
         if not candidates:
-            logging.info("Свежего софта не нашлось, проверяю музыку...")
             candidates = collect_from_feeds(FEEDS_MUSIC, KEYWORDS_MUSIC, history)
             category = "music"
 
@@ -493,7 +482,6 @@ def main():
         logging.info("Новых целевых новостей пока нет.")
         return
 
-    # Ротация доменов
     last_domain = ""
     if history:
         last_domain = urlparse(history[-1]).netloc
@@ -503,17 +491,26 @@ def main():
 
     logging.info(f"Выбрана новость ({category}): {selected_news['title']}")
 
+    # ЕСЛИ В RSS НЕ БЫЛО КАРТИНКИ — ПАРСИМ СТРАНИЦУ СТАТЬИ В ПОИСКАХ OG:IMAGE
+    if not selected_news.get('image_url'):
+        logging.info("Картинки в RSS не было, пробую спарсить og:image со страницы...")
+        selected_news['image_url'] = fetch_og_image_fallback(selected_news['link'])
+
     try:
-        reply_markup = None
-        
         if category == "music":
             post_text, search_query = generate_music_post(selected_news)
-            logging.info(f"Ищу ссылки на стриминг для: '{search_query}'...")
-            streaming_links = find_streaming_links(search_query, selected_news.get('raw_html', ''))
-            reply_markup = build_music_keyboard(streaming_links, selected_news['link'])
+            
+            # Если это был конкретный релиз и есть поисковый запрос — ищем стриминги
+            if search_query:
+                logging.info(f"Ищу ссылки на стриминг для: '{search_query}'...")
+                streaming_links = find_streaming_links(search_query, selected_news.get('raw_html', ''))
+                reply_markup = build_music_keyboard(streaming_links, selected_news['link'])
+            else:
+                # Для общих индустриальных новостей делаем только кнопку источника
+                reply_markup = build_default_keyboard(selected_news['link'])
         else:
             post_text = generate_tech_post(selected_news)
-            reply_markup = build_tech_keyboard(selected_news['link'])
+            reply_markup = build_default_keyboard(selected_news['link'])
 
         send_to_telegram(
             text=post_text,
