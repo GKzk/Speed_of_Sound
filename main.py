@@ -21,27 +21,36 @@ AI_API_KEY = os.environ.get("AI_API_KEY")
 HISTORY_FILE = "history.json"
 DIGEST_STATE_FILE = "digest_state.txt"
 
-# Источники с фокусом на электронику, хип-хоп, релизы и продакшен
-RSS_FEEDS = [
+# === РАЗДЕЛЕНИЕ ИСТОЧНИКОВ: МУЗЫКА И ТЕХНИКА ===
+
+FEEDS_MUSIC = [
     "https://the-flow.ru/rss",
     "https://pitchfork.com/rss/reviews/albums/",
     "https://ra.co/xml/news",
     "https://mixmag.net/rss.xml",
     "https://djmag.com/rss.xml",
-    "https://hiphopdx.com/rss",
+    "https://hiphopdx.com/rss"
+]
+
+FEEDS_TECH = [
     "https://samesound.ru/feed",
     "https://cdm.link/feed/",
     "https://www.musicradar.com/rss"
 ]
 
-TARGET_KEYWORDS = [
+KEYWORDS_MUSIC = [
     'релиз', 'альбом', 'трек', 'album', 'track', 'ep', 'клип', 'video',
     'хип-хоп', 'hip hop', 'рэп', 'rap', 'trap', 'drill', 'электроника', 'electronic',
-    'techno', 'house', 'rave', 'synth', 'синтезатор', 'сэмпл', 'producer',
-    'ableton', 'daw', 'vst', 'новинка', 'премьера', 'интервью', 'стриминг'
+    'techno', 'house', 'rave', 'премьера', 'новинка', 'сингл', 'single', 'слушать', 'review'
 ]
 
-# === УТИЛИТЫ ДЛЯ БОРЬБЫ С ДУБЛЯМИ И СОХРАНЕНИЯ СОСТОЯНИЯ ===
+KEYWORDS_TECH = [
+    'vst', 'plugin', 'плагин', 'ableton', 'fl studio', 'logic', 'cubase', 'reaper', 'daw',
+    'synth', 'синтезатор', 'драм-машина', 'сэмпл', 'sample', 'midi', 'миди',
+    'update', 'сведение', 'мастеринг', 'mixing', 'битмейкинг', 'sound design', 'железо', 'hardware'
+]
+
+# === УТИЛИТЫ ДЛЯ БОРЬБЫ С ДУБЛЯМИ И ХРАНЕНИЯ ===
 
 def clean_url(url):
     """Удаляет UTM-метки и трекеры, чтобы один и тот же URL не постился дважды."""
@@ -60,7 +69,6 @@ def load_history():
 
 def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        # Храним последние 200 ссылок
         json.dump(history[-200:], f, ensure_ascii=False, indent=2)
 
 def is_digest_sent_today():
@@ -108,12 +116,11 @@ def clean_html_for_telegram(text):
     text = re.sub(r'\n{3,}', '\n\n', text).strip()
     return text
 
-# === ИНТЕЛЛЕКТУАЛЬНЫЙ КАСКАД МОДЕЛЕЙ (ОБХОД ЛИМИТОВ И ОШИБОК) ===
+# === КАСКАД МОДЕЛЕЙ GEMINI ===
 
 def generate_text_with_fallback(prompt):
     genai.configure(api_key=AI_API_KEY)
     
-    # Ниспадающий список моделей: от новых к проверенным
     models_to_try = [
         'gemini-3.8-flash',
         'gemini-3.7-flash',
@@ -135,33 +142,58 @@ def generate_text_with_fallback(prompt):
         except Exception as e:
             err = str(e).lower()
             if '429' in err or 'quota' in err or 'exhausted' in err:
-                logging.warning(f"[{model_name}] Исчерпан лимит (429 Quota). Переключаюсь на следующую модель...")
+                logging.warning(f"[{model_name}] Исчерпан лимит (429 Quota). Переключаюсь...")
             elif '404' in err or 'not found' in err:
-                logging.warning(f"[{model_name}] Модель пока не доступна в API. Переключаюсь...")
+                logging.warning(f"[{model_name}] Модель не найдена в API. Переключаюсь...")
             else:
                 logging.warning(f"[{model_name}] Ошибка: {e}. Переключаюсь...")
 
     raise RuntimeError("Все доступные модели Gemini вернули ошибки или исчерпали лимиты.")
 
-# === ГЕНЕРАЦИЯ ПОСТОВ ===
+# === ГЕНЕРАЦИЯ ПОСТОВ ПОД КАТЕГОРИИ ===
 
-def generate_regular_post(news_item):
+def generate_music_post(news_item):
+    """Промпт с упором на музыку, вайб, стиль и эмоции от прослушивания"""
     prompt = f"""
-Ты — куратор и голос Telegram-канала "Speed of Sound" (@speed_sound).
-Канал посвящен актуальной музыке: хип-хопу, электронике, новинкам релизов и студийному продакшену. 
-Твой стиль: динамичный, дерзкий, профессиональный, но простой и понятный для широкой аудитории (меломанов и битмейкеров).
+Ты — музыкальный журналист, диггер и автор Telegram-канала "Speed of Sound" (@speed_sound).
+Перед тобой новость о музыкальном релизе, треке или альбоме.
+Сделай яркий, вкусный обзор, интересный как обычному слушателю, так и битмейкеру.
 
 ОРИГИНАЛЬНАЯ НОВОСТЬ:
 Заголовок: {news_item['title']}
 Текст: {news_item['summary']}
 
-ПРАВИЛА ОФОРМЛЕНИЯ:
-1. Заголовок: Сделай емкий, цепляющий заголовок на русском языке. Оберни его строго в тег <b>...</b>.
-2. Первый абзац: Суть новости (что вышло, кто дропнул трек/альбом, какой софт презентовали).
-3. Второй абзац: Оценка и польза (в чем вайб релиза, кому зайдет, как это звучит или почему плагин стоит покрутить). Пиши живым языком без занудства и канцеляризмов.
-4. Длина текста: строго до 650 символов!
-5. Хештеги в конце (2-3 штуки): #новинка #хипхоп #электроника #продакшен #релиз #vst #speedofsound
-6. Форматирование: разрешены ТОЛЬКО HTML-теги <b> и <i>. Никакого Markdown (никаких **звездочек**)!
+ПРАВИЛА:
+1. Заголовок: Цепляющий, стильный, на русском языке. Оберни его в тег <b>...</b>.
+2. Первый абзац: Кто дропнул, что вышло (альбом, сингл, клип), в каком жанре/звучании.
+3. Второй абзац: Вайб и звук — как это звучит, что цепляет (бит, бас, вокал, атмосфера), почему стоит добавить в плейлист прямо сейчас. Пиши сочно, без воды и канцелярита!
+4. Длина: строго до 650 символов!
+5. Хештеги в конце (2-3 шт): #релиз #новинка #хипхоп #электроника #слушать #speedofsound
+6. Разрешены ТОЛЬКО HTML-теги <b> и <i>. Никаких звездочек Markdown.
+
+Напиши пост:
+"""
+    raw_text = generate_text_with_fallback(prompt)
+    return clean_html_for_telegram(raw_text)
+
+def generate_tech_post(news_item):
+    """Промпт для полезного оборудования и софта (30% постов)"""
+    prompt = f"""
+Ты — куратор Telegram-канала "Speed of Sound" (@speed_sound) и опытный саунд-продюсер.
+Перед тобой новость про софт, плагин, девайс или фишку для продакшена.
+Сделай полезный, емкий пост без занудства.
+
+ОРИГИНАЛЬНАЯ НОВОСТЬ:
+Заголовок: {news_item['title']}
+Текст: {news_item['summary']}
+
+ПРАВИЛА:
+1. Заголовок: Емкий и прикладной, в теге <b>...</b>.
+2. Первый абзац: Суть девайса/обновления (что делает этот инструмент или софт).
+3. Второй абзац: Реальная польза (как разгоняет воркфлоу, какой звук дает, кому пригодится в сетапе).
+4. Длина: строго до 600 символов!
+5. Хештеги в конце: #продакшен #vst #железо #ableton #plugins #speedofsound
+6. Разрешены ТОЛЬКО HTML-теги <b> и <i>. Никаких звездочек Markdown.
 
 Напиши пост:
 """
@@ -170,8 +202,8 @@ def generate_regular_post(news_item):
 
 def gather_weekly_context():
     weekly_titles = []
-    feeds = RSS_FEEDS.copy()
-    for feed_url in feeds:
+    # Для пятничного дайджеста собираем преимущественно релизы
+    for feed_url in FEEDS_MUSIC + FEEDS_TECH[:1]:
         try:
             feed = feedparser.parse(feed_url)
             for entry in feed.entries[:8]:
@@ -183,17 +215,17 @@ def gather_weekly_context():
 def generate_friday_digest():
     context = gather_weekly_context()
     prompt = f"""
-Ты — музыкальный редактор Telegram-канала "Speed of Sound". Сегодня пятница — главный день музыкальных новинок!
-Вот список релизов и инфоповодов за неделю:
+Ты — музыкальный редактор канала "Speed of Sound". Сегодня пятница — New Music Friday!
+Вот релизы и новости недели:
 {context}
 
 ЗАДАЧА:
-Составь пост: "🔥 Пятничный дайджест: 7-8 главных релизов недели".
-Фокус: зарубежный и русскоязычный хип-хоп, свежая электроника (house, techno, bass) и самые обсуждаемые альбомы/синглы.
-- Оформи в виде аккуратного пронумерованного списка (1 to 8).
-- Укажи Артиста — Название релиза и в 1-2 предложениях опиши, почему это стоит послушать.
-- В конце каждого пункта добавь: "Слушать на площадках (Яндекс Музыка, Spotify, VK)".
-- Используй жирный шрифт <b>...</b> для названий. Без markdown звездочек. Лимит 2200 знаков.
+Составь "🔥 Пятничный дайджест: 7-8 главных релизов недели".
+Фокус: зарубежный и русскоязычный хип-хоп, клубная и домашняя электроника, самые обсуждаемые альбомы.
+- Пронумерованный список от 1 до 8.
+- Артист — Название: в 1-2 предложениях опиши, почему релиз заслуживает внимания.
+- После каждого трека добавь: "🎧 Слушать на площадках".
+- Используй HTML-тег <b> для названий. Без markdown-звездочек. До 2200 символов.
 """
     raw_text = generate_text_with_fallback(prompt)
     return clean_html_for_telegram(raw_text)
@@ -206,7 +238,6 @@ def send_to_telegram(text, image_url=None, news_link=None, target_chat_id=CHANNE
         
     url_base = f"https://api.telegram.org/bot{BOT_TOKEN}/"
     
-    # 1. Попытка отправить с картинкой
     if image_url and len(text) <= 1024:
         res = requests.post(url_base + "sendPhoto", json={
             "chat_id": target_chat_id,
@@ -220,7 +251,6 @@ def send_to_telegram(text, image_url=None, news_link=None, target_chat_id=CHANNE
         else:
             logging.warning(f"Не удалось отправить фото: {res.text}. Пробую текстом...")
 
-    # 2. Отправка сообщением
     res = requests.post(url_base + "sendMessage", json={
         "chat_id": target_chat_id,
         "text": text,
@@ -235,47 +265,14 @@ def send_to_telegram(text, image_url=None, news_link=None, target_chat_id=CHANNE
         logging.error(f"Ошибка отправки сообщения: {res.text}")
         return False
 
-# === ОСНОВНОЙ ЦИКЛ ===
+# === СБОР КАНДИДАТОВ ИЗ ЛЕНТ ===
 
-def main():
-    if not all([BOT_TOKEN, CHANNEL_ID, AI_API_KEY]):
-        logging.error("Отсутствуют обязательные токены в Secrets / Environment!")
-        return
-
-    now = datetime.datetime.now()
-    # Пятница — это день недели под индексом 4. Время с 8 до 12 утра.
-    is_friday_morning = (now.weekday() == 4) and (8 <= now.hour < 12)
-
-    # 1. ОБРАБОТКА ПЯТНИЧНОГО ДАЙДЖЕСТА В ЛС
-    if is_friday_morning:
-        if not ADMIN_ID:
-            logging.warning("Наступило утро пятницы, но ADMIN_ID не задан в Secrets!")
-        elif not is_digest_sent_today():
-            logging.info("Пятница до обеда: формирую еженедельный дайджест в ЛС админу...")
-            try:
-                digest = generate_friday_digest()
-                notice = (
-                    "<b>🔔 ПЯТНИЧНЫЙ ДАЙДЖЕСТ (ЧЕРНОВИК НА СОГЛАСОВАНИЕ)</b>\n\n"
-                    f"{digest}\n\n"
-                    "<i>Отредактируй текст при необходимости и скопируй в канал.</i>"
-                )
-                success = send_to_telegram(notice, target_chat_id=ADMIN_ID)
-                if success:
-                    mark_digest_sent()
-                    logging.info("Дайджест успешно доставлен в ЛС.")
-            except Exception as e:
-                logging.error(f"Не удалось сформировать пятничный дайджест: {e}")
-            return
-        else:
-            logging.info("Пятничный дайджест уже отправлялся сегодня.")
-
-    # 2. РЕГУЛЯРНЫЙ ПОСТИНГ НОВОСТЕЙ
-    history = load_history()
-    random.shuffle(RSS_FEEDS)
-    
+def collect_from_feeds(feed_urls, target_keywords, history):
     candidates = []
-
-    for feed_url in RSS_FEEDS:
+    shuffled_feeds = feed_urls.copy()
+    random.shuffle(shuffled_feeds)
+    
+    for feed_url in shuffled_feeds:
         try:
             feed = feedparser.parse(feed_url)
             for entry in feed.entries[:10]:
@@ -289,24 +286,88 @@ def main():
                 
                 text_to_check = (title + " " + clean_summary).lower()
                 
-                if any(kw in text_to_check for kw in TARGET_KEYWORDS):
-                    image_url = extract_image_url(entry)
+                if any(kw in text_to_check for kw in target_keywords):
                     candidates.append({
                         "title": title,
                         "summary": clean_summary[:800],
                         "link": link,
-                        "image_url": image_url,
+                        "image_url": extract_image_url(entry),
                         "domain": urlparse(link).netloc
                     })
-                    break 
+                    break
         except Exception as e:
-            logging.error(f"Ошибка при чтении ленты {feed_url}: {e}")
+            logging.error(f"Ошибка чтения {feed_url}: {e}")
+            
+    return candidates
 
-    if not candidates:
-        logging.info("Свежих целевых новостей пока нет.")
+# === ОСНОВНОЙ ЦИКЛ ===
+
+def main():
+    # Гарантируем наличие необходимых файлов
+    if not os.path.exists(DIGEST_STATE_FILE):
+        with open(DIGEST_STATE_FILE, "w", encoding="utf-8") as f:
+            f.write("")
+
+    if not all([BOT_TOKEN, CHANNEL_ID, AI_API_KEY]):
+        logging.error("Отсутствуют обязательные токены!")
         return
 
-    # Защита: избегаем публикаций с одного и того же сайта подряд
+    now = datetime.datetime.now()
+    is_friday_morning = (now.weekday() == 4) and (8 <= now.hour < 12)
+
+    # 1. ОБРАБОТКА ПЯТНИЧНОГО ДАЙДЖЕСТА В ЛС
+    if is_friday_morning:
+        if not ADMIN_ID:
+            logging.warning("Пятница утро, но ADMIN_ID не задан!")
+        elif not is_digest_sent_today():
+            logging.info("Пятница до обеда: отправка дайджеста в ЛС...")
+            try:
+                digest = generate_friday_digest()
+                notice = (
+                    "<b>🔔 ПЯТНИЧНЫЙ ДАЙДЖЕСТ (ЧЕРНОВИК НА СОГЛАСОВАНИЕ)</b>\n\n"
+                    f"{digest}\n\n"
+                    "<i>Отредактируй и перешли в канал, если всё Ок!</i>"
+                )
+                success = send_to_telegram(notice, target_chat_id=ADMIN_ID)
+                if success:
+                    mark_digest_sent()
+                    logging.info("Дайджест отправлен админу.")
+            except Exception as e:
+                logging.error(f"Ошибка дайджеста: {e}")
+            return
+        else:
+            logging.info("Дайджест уже отправлялся сегодня.")
+
+    # 2. РЕГУЛЯРНЫЙ ПОСТИНГ: 70% МУЗЫКА, 30% ТЕХНИКА
+    history = load_history()
+    
+    # Бросаем кубик: 70% вероятность для музыки
+    pick_music = random.random() < 0.70
+    primary_category = "music" if pick_music else "tech"
+    logging.info(f"Бросок вероятности: выбрана категория [{primary_category.upper()}] (70/30 split)")
+
+    if pick_music:
+        candidates = collect_from_feeds(FEEDS_MUSIC, KEYWORDS_MUSIC, history)
+        category = "music"
+        # Если музыки вдруг нет, берем технику как запасной вариант
+        if not candidates:
+            logging.info("Свежей музыки не нашлось, проверяю софт/железо...")
+            candidates = collect_from_feeds(FEEDS_TECH, KEYWORDS_TECH, history)
+            category = "tech"
+    else:
+        candidates = collect_from_feeds(FEEDS_TECH, KEYWORDS_TECH, history)
+        category = "tech"
+        # Если техники нет, берем музыку как запасной вариант
+        if not candidates:
+            logging.info("Свежего софта не нашлось, проверяю музыку...")
+            candidates = collect_from_feeds(FEEDS_MUSIC, KEYWORDS_MUSIC, history)
+            category = "music"
+
+    if not candidates:
+        logging.info("Новых целевых новостей пока нет.")
+        return
+
+    # Защита от одного и того же домена подряд
     last_domain = ""
     if history:
         last_domain = urlparse(history[-1]).netloc
@@ -314,9 +375,15 @@ def main():
     diff_domain = [c for c in candidates if c['domain'] != last_domain]
     selected_news = random.choice(diff_domain) if diff_domain else random.choice(candidates)
 
-    logging.info(f"Выбрана новость: {selected_news['title']}")
+    logging.info(f"Выбрана новость ({category}): {selected_news['title']}")
+
     try:
-        post_text = generate_regular_post(selected_news)
+        # Генерируем пост специализированным промптом
+        if category == "music":
+            post_text = generate_music_post(selected_news)
+        else:
+            post_text = generate_tech_post(selected_news)
+
         send_to_telegram(
             text=post_text,
             image_url=selected_news.get('image_url'),
