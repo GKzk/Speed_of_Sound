@@ -35,7 +35,9 @@
           "env": {
             "BOT_TOKEN": "${{ secrets.BOT_TOKEN }}",
             "CHANNEL_ID": "${{ secrets.CHANNEL_ID }}",
-            "AI_API_KEY": "${{ secrets.AI_API_KEY }}"
+            "AI_API_KEY": "${{ secrets.AI_API_KEY }}",
+            "ADMIN_ID": "${{ secrets.ADMIN_ID }}",
+            "TZ": "Europe/Moscow"
           },
           "run": "python main.py"
         },
@@ -43,8 +45,8 @@
           "name": "Save History",
           "uses": "stefanzweifel/git-auto-commit-action@v5",
           "with": {
-            "commit_message": "update history",
-            "file_pattern": "history.json"
+            "commit_message": "update history and digest state",
+            "file_pattern": "history.json digest_state.txt"
           }
         }
       ]
