@@ -434,7 +434,7 @@ def main():
         return
 
     now = datetime.datetime.now()
-    is_friday_morning = True
+    is_friday_morning = (now.weekday() == 4) and (8 <= now.hour < 12)
 
     # 1. ПЯТНИЧНЫЙ ДАЙДЖЕСТ
     if is_friday_morning:
